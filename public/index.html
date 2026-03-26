@@ -246,14 +246,9 @@ async function boot() {
     const { key } = await res.json();
     fill.style.width = '50%';
 
-    await new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = `https://maps.googleapis.com/maps/api/js?key=${key}&libraries=places&callback=initMap`;
-      s.async = true;
-      s.onerror = () => reject(new Error('Google Maps failed to load'));
-      window.initMap = initMap;
-      document.head.appendChild(s);
-    });
+    const s = document.createElement('script')
+    s.src = \https://maps.googleapis.com/maps/apj/js?key=${key}&libraries=places&callback=initMap';'
+    document.head.appendChild(s)
   } catch (err) {
     document.getElementById('load-err').style.display = 'block';
     document.getElementById('load-err').textContent = err.message;

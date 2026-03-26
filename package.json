@@ -1,0 +1,14 @@
+{
+  "name": "three-rights",
+  "version": "1.0.0",
+  "description": "Three rights make a left — smart navigation that keeps you safe at every turn",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1"
+  }
+}

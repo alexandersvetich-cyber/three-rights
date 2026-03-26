@@ -251,7 +251,7 @@ async function boot() {
       s.src = `https://maps.googleapis.com/maps/api/js?key=${key}&libraries=places&callback=initMap`;
       s.async = true;
       s.onerror = () => reject(new Error('Google Maps failed to load'));
-      window.initMap = () => { fill.style.width = '100%'; setTimeout(resolve, 300); };
+      window.initMap = initMap;
       document.head.appendChild(s);
     });
   } catch (err) {

@@ -311,7 +311,7 @@ async function navigate() {
     analyzed.sort((a, b) => a.unprotectedLefts !== b.unprotectedLefts ? a.unprotectedLefts - b.unprotectedLefts : a.dur - b.dur);
     display(result, analyzed[0]);
   } catch (e) {
-    showErr(`Route failed: ${e}. Check addresses.`);
+    showErr(\`Route failed: ${e}. Check addresses.);`
   }
 
   btn.disabled = false;

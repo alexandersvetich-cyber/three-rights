@@ -571,130 +571,175 @@ async function navigate() {
   btn.textContent = 'NAVIGATE — THREE RIGHTS';
 }
 
-// ── Eliminate unprotected lefts by computing three-right-turn detours ──
+// ── Eliminate unprotected lefts by rerouting around problem intersections ──
 async function eliminateUnprotectedLefts(origin, destination, initialResult, initialAnalysis, communityArrows, osmSignals) {
-  const route = initialResult.routes[initialAnalysis.routeIndex];
 
-  // Collect unprotected left turn points with their context
-  const unprotectedLefts = [];
-  let stepIdx = 0;
-  const allGoogleSteps = [];
-  route.legs.forEach(leg => leg.steps.forEach(s => allGoogleSteps.push(s)));
+  // Collect all unprotected left turn intersection coordinates
+  function getUnprotectedLeftCoords(analysis, route) {
+    const coords = [];
+    let stepIdx = 0;
+    const allSteps = [];
+    route.legs.forEach(leg => leg.steps.forEach(s => allSteps.push(s)));
 
-  allGoogleSteps.forEach((step, i) => {
-    const analyzed = initialAnalysis.steps[stepIdx];
-    if (analyzed && analyzed.type === 'unprotected_left') {
-      const turnLat = step.start_location.lat();
-      const turnLng = step.start_location.lng();
-      const endLat = step.end_location.lat();
-      const endLng = step.end_location.lng();
-
-      // Get the direction we were traveling BEFORE this turn
-      const prevStep = i > 0 ? allGoogleSteps[i - 1] : null;
-      let approachLat = 0, approachLng = 0;
-      if (prevStep) {
-        approachLat = turnLat - prevStep.start_location.lat();
-        approachLng = turnLng - prevStep.start_location.lng();
-      }
-
-      // The left turn goes to endLat/endLng. We want to go RIGHT instead.
-      // Right turn = rotate approach direction 90° clockwise
-      // Clockwise rotation: (dLat, dLng) → (dLng, -dLat)
-      // Then place a waypoint ~150m in that right-turn direction
-      const dist = Math.sqrt(approachLat ** 2 + approachLng ** 2);
-      if (dist > 0) {
-        const normLat = approachLat / dist;
-        const normLng = approachLng / dist;
-
-        // Right turn direction (90° clockwise)
-        const rightLat = normLng;
-        const rightLng = -normLat;
-
-        // ~150m offset in right direction (approx 0.0014 degrees)
-        const offset = 0.0014;
-
-        // Waypoint 1: Go right at the intersection (~150m)
-        const wp1Lat = turnLat + rightLat * offset;
-        const wp1Lng = turnLng + rightLng * offset;
-
-        unprotectedLefts.push({
-          turnLat, turnLng, endLat, endLng,
-          rightWaypoint: { lat: wp1Lat, lng: wp1Lng },
-          approachLat: normLat,
-          approachLng: normLng,
+    allSteps.forEach((step, i) => {
+      const a = analysis.steps[stepIdx];
+      if (a && a.type === 'unprotected_left') {
+        const prevStep = i > 0 ? allSteps[i - 1] : null;
+        coords.push({
+          lat: step.start_location.lat(),
+          lng: step.start_location.lng(),
+          endLat: step.end_location.lat(),
+          endLng: step.end_location.lng(),
+          prevLat: prevStep ? prevStep.start_location.lat() : null,
+          prevLng: prevStep ? prevStep.start_location.lng() : null,
         });
       }
+      stepIdx++;
+    });
+    return coords;
+  }
+
+  let currentResult = initialResult;
+  let currentAnalysis = initialAnalysis;
+  let currentRoute = initialResult.routes[initialAnalysis.routeIndex];
+  let attempts = 0;
+  const maxAttempts = 4;
+  const avoidPoints = []; // Accumulate points to avoid across iterations
+
+  while (currentAnalysis.unprotectedLefts > 0 && attempts < maxAttempts) {
+    attempts++;
+    const leftCoords = getUnprotectedLeftCoords(currentAnalysis, currentRoute);
+    if (leftCoords.length === 0) break;
+
+    // For each unprotected left, create waypoints that force an alternative path
+    const newWaypoints = [];
+
+    for (const lc of leftCoords) {
+      // Calculate approach direction
+      let dLat = 0, dLng = 0;
+      if (lc.prevLat !== null) {
+        dLat = lc.lat - lc.prevLat;
+        dLng = lc.lng - lc.prevLng;
+      }
+      const dist = Math.sqrt(dLat ** 2 + dLng ** 2);
+
+      if (dist > 0) {
+        const normLat = dLat / dist;
+        const normLng = dLng / dist;
+
+        // Strategy varies by attempt:
+        // Attempt 1: Place waypoint to the RIGHT of the left turn (~200m)
+        // Attempt 2: Place waypoint BEHIND the intersection on a parallel street (~300m right)
+        // Attempt 3: Place waypoint way before the intersection on a different approach (~500m back + right)
+        // Attempt 4: Place waypoint on the destination side, forcing approach from a different angle
+
+        const rightLat = normLng;  // 90° clockwise rotation
+        const rightLng = -normLat;
+
+        let wpLat, wpLng;
+
+        if (attempts === 1) {
+          // 200m to the right of the turn point
+          wpLat = lc.lat + rightLat * 0.002;
+          wpLng = lc.lng + rightLng * 0.002;
+        } else if (attempts === 2) {
+          // 300m back along approach + 300m right (parallel street before the intersection)
+          wpLat = lc.lat - normLat * 0.003 + rightLat * 0.003;
+          wpLng = lc.lng - normLng * 0.003 + rightLng * 0.003;
+        } else if (attempts === 3) {
+          // 500m back + 400m right (way before the problem area)
+          wpLat = lc.lat - normLat * 0.005 + rightLat * 0.004;
+          wpLng = lc.lng - normLng * 0.005 + rightLng * 0.004;
+        } else {
+          // Approach the destination of the left turn from the opposite direction
+          // Place waypoint past where the left would have ended, coming from right side
+          wpLat = lc.endLat + rightLat * 0.003;
+          wpLng = lc.endLng + rightLng * 0.003;
+        }
+
+        newWaypoints.push({
+          location: new google.maps.LatLng(wpLat, wpLng),
+          stopover: true,
+        });
+      }
+
+      // Also add this intersection to the avoid list
+      avoidPoints.push({ lat: lc.lat, lng: lc.lng });
     }
-    stepIdx++;
-  });
 
-  if (unprotectedLefts.length === 0) return null;
+    // Combine accumulated avoid waypoints with new ones, limit to 8
+    const allWaypoints = newWaypoints.slice(0, 8);
+    if (allWaypoints.length === 0) break;
 
-  // Strategy 1: Route through right-turn waypoints
-  // For each unprotected left, add a waypoint that forces a right turn
-  const rightWaypoints = unprotectedLefts.map(ul => ({
-    location: new google.maps.LatLng(ul.rightWaypoint.lat, ul.rightWaypoint.lng),
-    stopover: true, // stopover=true forces the route through this point
-  }));
-
-  // Try up to 3 strategies
-  const strategies = [
-    // Strategy 1: Right-turn waypoints (stopover)
-    rightWaypoints.slice(0, 8),
-    // Strategy 2: Right-turn waypoints (via/non-stopover — gentler nudge)
-    rightWaypoints.slice(0, 8).map(wp => ({ ...wp, stopover: false })),
-    // Strategy 3: Place waypoints further out (300m right) for wider detour
-    unprotectedLefts.slice(0, 8).map(ul => ({
-      location: new google.maps.LatLng(
-        ul.turnLat + (ul.approachLng || 0) * 0.0028,
-        ul.turnLng + (-(ul.approachLat || 0)) * 0.0028
-      ),
-      stopover: true,
-    })),
-  ];
-
-  let bestResult = null;
-  let bestAnalysis = null;
-  let bestScore = initialAnalysis.unprotectedLefts;
-
-  for (const waypoints of strategies) {
     try {
       const rerouted = await new Promise((res, rej) => {
         dirSvc.route({
           origin, destination,
-          waypoints,
+          waypoints: allWaypoints,
           travelMode: 'DRIVING',
           provideRouteAlternatives: true,
           drivingOptions: { departureTime: new Date(), trafficModel: 'bestguess' },
         }, (r, s) => s === 'OK' ? res(r) : rej(s));
       });
 
+      // Re-analyze all returned routes
       const reAnalyzed = rerouted.routes.map((r, i) => analyze(r, i));
       for (const a of reAnalyzed) {
         await verifyLeftTurns(a, rerouted.routes[a.routeIndex], communityArrows, osmSignals);
       }
+
+      // Also check: did any rerouted route accidentally go through an intersection
+      // we already know is an unprotected left? If so, penalize it
+      for (const a of reAnalyzed) {
+        let penalty = 0;
+        let sIdx = 0;
+        rerouted.routes[a.routeIndex].legs.forEach(leg => {
+          leg.steps.forEach(step => {
+            const s = a.steps[sIdx];
+            if (s && s.maneuver && s.maneuver.includes('left')) {
+              for (const ap of avoidPoints) {
+                if (haversine(step.start_location.lat(), step.start_location.lng(), ap.lat, ap.lng) < 80) {
+                  // This route goes through a known problem intersection
+                  if (s.type !== 'confirmed_left' && s.type !== 'fourway_left') {
+                    penalty++;
+                  }
+                }
+              }
+            }
+            sIdx++;
+          });
+        });
+        a.unprotectedLefts += penalty;
+      }
+
       reAnalyzed.sort((a, b) =>
         a.unprotectedLefts !== b.unprotectedLefts
           ? a.unprotectedLefts - b.unprotectedLefts
           : a.dur - b.dur
       );
 
-      const candidate = reAnalyzed[0];
-      if (candidate.unprotectedLefts < bestScore) {
-        bestScore = candidate.unprotectedLefts;
-        bestResult = rerouted;
-        bestAnalysis = candidate;
-        // If we got zero unprotected lefts, we're done
-        if (bestScore === 0) break;
+      const best = reAnalyzed[0];
+
+      // Only update if this is an improvement
+      if (best.unprotectedLefts < currentAnalysis.unprotectedLefts) {
+        currentResult = rerouted;
+        currentAnalysis = best;
+        currentRoute = rerouted.routes[best.routeIndex];
+
+        // If zero unprotected lefts, we're done!
+        if (currentAnalysis.unprotectedLefts === 0) break;
+      } else {
+        // This strategy didn't help — try next attempt with different offsets
+        continue;
       }
     } catch {
-      // Strategy failed, try next one
       continue;
     }
   }
 
-  if (bestResult && bestAnalysis) {
-    return { result: bestResult, analysis: bestAnalysis };
+  // Return the best route we found if it's better than the original
+  if (currentAnalysis.unprotectedLefts < initialAnalysis.unprotectedLefts) {
+    return { result: currentResult, analysis: currentAnalysis };
   }
   return null;
 }

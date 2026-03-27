@@ -448,13 +448,14 @@ function matchArrow(lat, lng, communityArrows) {
   return { found: false };
 }
 
-// ── OSM Overpass API: Batch fetch ALL traffic signals along the route ──
+// ── OSM Overpass API: Batch fetch ALL traffic signals AND stop signs along the route ──
 async function batchFetchOSMSignals(bounds) {
   const minLat = bounds.south - 0.002;
   const maxLat = bounds.north + 0.002;
   const minLng = bounds.west - 0.002;
   const maxLng = bounds.east + 0.002;
-  const query = `[out:json][timeout:10];node["highway"="traffic_signals"](${minLat},${minLng},${maxLat},${maxLng});out tags;`;
+  // Fetch both traffic signals AND stop signs in one query
+  const query = `[out:json][timeout:10];(node["highway"="traffic_signals"](${minLat},${minLng},${maxLat},${maxLng});node["highway"="stop"](${minLat},${minLng},${maxLat},${maxLng}););out tags;`;
   try {
     const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
     if (!res.ok) return [];
@@ -468,6 +469,7 @@ async function batchFetchOSMSignals(bounds) {
 // Check if a specific turn point has a green arrow in the pre-fetched OSM data
 function checkOSMSignalFromCache(lat, lng, osmSignals) {
   for (const el of osmSignals) {
+    if (el.tags?.highway !== 'traffic_signals') continue;
     if (haversine(lat, lng, el.lat, el.lon) < 35) {
       const tags = el.tags || {};
       let hasArrow = false;
@@ -479,6 +481,16 @@ function checkOSMSignalFromCache(lat, lng, osmSignals) {
     }
   }
   return { hasSignal: false, hasArrow: false };
+}
+
+// Check if a specific turn point has a STOP SIGN nearby in OSM data
+function checkOSMStopSign(lat, lng, osmData) {
+  for (const el of osmData) {
+    if (el.tags?.highway === 'stop' && haversine(lat, lng, el.lat, el.lon) < 40) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // ── Navigate ──
@@ -559,142 +571,132 @@ async function navigate() {
   btn.textContent = 'NAVIGATE — THREE RIGHTS';
 }
 
-// ── Eliminate unprotected lefts by adding waypoints that force right turns ──
+// ── Eliminate unprotected lefts by computing three-right-turn detours ──
 async function eliminateUnprotectedLefts(origin, destination, initialResult, initialAnalysis, communityArrows, osmSignals) {
   const route = initialResult.routes[initialAnalysis.routeIndex];
-  const waypoints = [];
 
-  // Find all unprotected left turn locations
+  // Collect unprotected left turn points with their context
+  const unprotectedLefts = [];
   let stepIdx = 0;
-  route.legs.forEach(leg => {
-    leg.steps.forEach((step, i) => {
-      const analyzed = initialAnalysis.steps[stepIdx];
-      if (analyzed && analyzed.type === 'unprotected_left') {
-        // Get the turn point and the road we're currently on
-        const turnLat = step.start_location.lat();
-        const turnLng = step.start_location.lng();
+  const allGoogleSteps = [];
+  route.legs.forEach(leg => leg.steps.forEach(s => allGoogleSteps.push(s)));
 
-        // Calculate a point PAST the intersection (continue straight ~100m instead of turning left)
-        // Then Google will be forced to find a different path from that point
-        const nextStep = stepIdx + 1 < initialAnalysis.steps.length ? route.legs[0].steps[i + 1] : null;
+  allGoogleSteps.forEach((step, i) => {
+    const analyzed = initialAnalysis.steps[stepIdx];
+    if (analyzed && analyzed.type === 'unprotected_left') {
+      const turnLat = step.start_location.lat();
+      const turnLng = step.start_location.lng();
+      const endLat = step.end_location.lat();
+      const endLng = step.end_location.lng();
 
-        // Use the step's end location as a "go past" waypoint
-        // This forces the route to continue straight through the intersection
-        // instead of turning left, then Google figures out the best way to get
-        // back on track (usually via right turns)
-        const endLat = step.end_location.lat();
-        const endLng = step.end_location.lng();
-
-        // Calculate a "go straight" waypoint by extending past the turn point
-        // in the direction we were already heading
-        const prevStep = stepIdx > 0 ? route.legs[0].steps[Math.max(0, i - 1)] : null;
-        if (prevStep) {
-          const headingLat = turnLat + (turnLat - prevStep.start_location.lat()) * 0.3;
-          const headingLng = turnLng + (turnLng - prevStep.start_location.lng()) * 0.3;
-          waypoints.push({
-            location: new google.maps.LatLng(headingLat, headingLng),
-            stopover: false,
-          });
-        }
+      // Get the direction we were traveling BEFORE this turn
+      const prevStep = i > 0 ? allGoogleSteps[i - 1] : null;
+      let approachLat = 0, approachLng = 0;
+      if (prevStep) {
+        approachLat = turnLat - prevStep.start_location.lat();
+        approachLng = turnLng - prevStep.start_location.lng();
       }
-      stepIdx++;
-    });
+
+      // The left turn goes to endLat/endLng. We want to go RIGHT instead.
+      // Right turn = rotate approach direction 90° clockwise
+      // Clockwise rotation: (dLat, dLng) → (dLng, -dLat)
+      // Then place a waypoint ~150m in that right-turn direction
+      const dist = Math.sqrt(approachLat ** 2 + approachLng ** 2);
+      if (dist > 0) {
+        const normLat = approachLat / dist;
+        const normLng = approachLng / dist;
+
+        // Right turn direction (90° clockwise)
+        const rightLat = normLng;
+        const rightLng = -normLat;
+
+        // ~150m offset in right direction (approx 0.0014 degrees)
+        const offset = 0.0014;
+
+        // Waypoint 1: Go right at the intersection (~150m)
+        const wp1Lat = turnLat + rightLat * offset;
+        const wp1Lng = turnLng + rightLng * offset;
+
+        unprotectedLefts.push({
+          turnLat, turnLng, endLat, endLng,
+          rightWaypoint: { lat: wp1Lat, lng: wp1Lng },
+          approachLat: normLat,
+          approachLng: normLng,
+        });
+      }
+    }
+    stepIdx++;
   });
 
-  if (waypoints.length === 0) return null;
+  if (unprotectedLefts.length === 0) return null;
 
-  // Limit to 8 waypoints (Google's max for free tier)
-  const limitedWaypoints = waypoints.slice(0, 8);
+  // Strategy 1: Route through right-turn waypoints
+  // For each unprotected left, add a waypoint that forces a right turn
+  const rightWaypoints = unprotectedLefts.map(ul => ({
+    location: new google.maps.LatLng(ul.rightWaypoint.lat, ul.rightWaypoint.lng),
+    stopover: true, // stopover=true forces the route through this point
+  }));
 
-  try {
-    // Re-request route with waypoints that bypass the unprotected lefts
-    const rerouted = await new Promise((res, rej) => {
-      dirSvc.route({
-        origin, destination,
-        waypoints: limitedWaypoints,
-        travelMode: 'DRIVING',
-        provideRouteAlternatives: true,
-        drivingOptions: { departureTime: new Date(), trafficModel: 'bestguess' },
-      }, (r, s) => s === 'OK' ? res(r) : rej(s));
-    });
+  // Try up to 3 strategies
+  const strategies = [
+    // Strategy 1: Right-turn waypoints (stopover)
+    rightWaypoints.slice(0, 8),
+    // Strategy 2: Right-turn waypoints (via/non-stopover — gentler nudge)
+    rightWaypoints.slice(0, 8).map(wp => ({ ...wp, stopover: false })),
+    // Strategy 3: Place waypoints further out (300m right) for wider detour
+    unprotectedLefts.slice(0, 8).map(ul => ({
+      location: new google.maps.LatLng(
+        ul.turnLat + (ul.approachLng || 0) * 0.0028,
+        ul.turnLng + (-(ul.approachLat || 0)) * 0.0028
+      ),
+      stopover: true,
+    })),
+  ];
 
-    // Analyze the rerouted options
-    const reAnalyzed = rerouted.routes.map((r, i) => analyze(r, i));
-    for (const a of reAnalyzed) {
-      await verifyLeftTurns(a, rerouted.routes[a.routeIndex], communityArrows, osmSignals);
-    }
-    reAnalyzed.sort((a, b) => a.unprotectedLefts !== b.unprotectedLefts ? a.unprotectedLefts - b.unprotectedLefts : a.dur - b.dur);
+  let bestResult = null;
+  let bestAnalysis = null;
+  let bestScore = initialAnalysis.unprotectedLefts;
 
-    const best = reAnalyzed[0];
-
-    // Only use the rerouted version if it's actually better
-    if (best.unprotectedLefts < initialAnalysis.unprotectedLefts) {
-      return { result: rerouted, analysis: best };
-    }
-
-    // If rerouting didn't help, try a second pass with avoid waypoints
-    // placed slightly to the RIGHT of each unprotected left turn
-    const rightWaypoints = [];
-    stepIdx = 0;
-    route.legs.forEach(leg => {
-      leg.steps.forEach((step, i) => {
-        const analyzed = initialAnalysis.steps[stepIdx];
-        if (analyzed && analyzed.type === 'unprotected_left') {
-          const turnLat = step.start_location.lat();
-          const turnLng = step.start_location.lng();
-          const prevStep = stepIdx > 0 ? route.legs[0].steps[Math.max(0, i - 1)] : null;
-          if (prevStep) {
-            // Calculate a point to the RIGHT of the direction of travel
-            const dLat = turnLat - prevStep.start_location.lat();
-            const dLng = turnLng - prevStep.start_location.lng();
-            // Rotate 90 degrees right: (dLat, dLng) → (dLng, -dLat)
-            const rightLat = turnLat + dLng * 0.5;
-            const rightLng = turnLng - dLat * 0.5;
-            rightWaypoints.push({
-              location: new google.maps.LatLng(rightLat, rightLng),
-              stopover: false,
-            });
-          }
-        }
-        stepIdx++;
+  for (const waypoints of strategies) {
+    try {
+      const rerouted = await new Promise((res, rej) => {
+        dirSvc.route({
+          origin, destination,
+          waypoints,
+          travelMode: 'DRIVING',
+          provideRouteAlternatives: true,
+          drivingOptions: { departureTime: new Date(), trafficModel: 'bestguess' },
+        }, (r, s) => s === 'OK' ? res(r) : rej(s));
       });
-    });
 
-    if (rightWaypoints.length > 0) {
-      try {
-        const rerouted2 = await new Promise((res, rej) => {
-          dirSvc.route({
-            origin, destination,
-            waypoints: rightWaypoints.slice(0, 8),
-            travelMode: 'DRIVING',
-            provideRouteAlternatives: true,
-            drivingOptions: { departureTime: new Date(), trafficModel: 'bestguess' },
-          }, (r, s) => s === 'OK' ? res(r) : rej(s));
-        });
-
-        const reAnalyzed2 = rerouted2.routes.map((r, i) => analyze(r, i));
-        for (const a of reAnalyzed2) {
-          await verifyLeftTurns(a, rerouted2.routes[a.routeIndex], communityArrows, osmSignals);
-        }
-        reAnalyzed2.sort((a, b) => a.unprotectedLefts !== b.unprotectedLefts ? a.unprotectedLefts - b.unprotectedLefts : a.dur - b.dur);
-
-        if (reAnalyzed2[0].unprotectedLefts < initialAnalysis.unprotectedLefts) {
-          return { result: rerouted2, analysis: reAnalyzed2[0] };
-        }
-      } catch {
-        // Second pass failed, return best from first pass
+      const reAnalyzed = rerouted.routes.map((r, i) => analyze(r, i));
+      for (const a of reAnalyzed) {
+        await verifyLeftTurns(a, rerouted.routes[a.routeIndex], communityArrows, osmSignals);
       }
-    }
+      reAnalyzed.sort((a, b) =>
+        a.unprotectedLefts !== b.unprotectedLefts
+          ? a.unprotectedLefts - b.unprotectedLefts
+          : a.dur - b.dur
+      );
 
-    // If rerouting still didn't eliminate all lefts, use whichever is better
-    if (best.unprotectedLefts <= initialAnalysis.unprotectedLefts) {
-      return { result: rerouted, analysis: best };
+      const candidate = reAnalyzed[0];
+      if (candidate.unprotectedLefts < bestScore) {
+        bestScore = candidate.unprotectedLefts;
+        bestResult = rerouted;
+        bestAnalysis = candidate;
+        // If we got zero unprotected lefts, we're done
+        if (bestScore === 0) break;
+      }
+    } catch {
+      // Strategy failed, try next one
+      continue;
     }
-
-    return null; // Original route was already the best
-  } catch {
-    return null; // Rerouting failed, keep original
   }
+
+  if (bestResult && bestAnalysis) {
+    return { result: bestResult, analysis: bestAnalysis };
+  }
+  return null;
 }
 
 // ── Verify left turns against community DB, OSM cache, and local cache ──
@@ -718,29 +720,38 @@ async function verifyLeftTurns(analysis, route, communityArrows, osmSignals) {
   });
 
   for (const ls of leftSteps) {
-    // 1. Check community database (already fetched in bulk)
-    const match = matchArrow(ls.lat, ls.lng, communityArrows);
-    if (match.found) {
-      if (match.verified) {
-        ls.step.type = 'confirmed_left';
-        ls.step.safety = { safe: true, reason: `Green arrow — community verified (${match.confirmations} drivers)`, type: 'community_verified' };
-        if (ls.step.type !== 'fourway_left') {
-          analysis.unprotectedLefts = Math.max(0, analysis.unprotectedLefts - 1);
-        }
-        analysis.confirmedLefts = (analysis.confirmedLefts || 0) + 1;
-        continue;
-      } else {
-        ls.step.type = 'confirmed_left';
-        ls.step.safety = { safe: true, reason: `Green arrow reported (${match.confirmations}/${COMMUNITY_THRESHOLD} needed to verify)`, type: 'user_reported' };
-        if (ls.step.type !== 'fourway_left') {
-          analysis.unprotectedLefts = Math.max(0, analysis.unprotectedLefts - 1);
-        }
-        analysis.confirmedLefts = (analysis.confirmedLefts || 0) + 1;
-        continue;
-      }
+    // First check OSM: is there a STOP SIGN here? If yes, this is NEVER a green arrow
+    const hasStopSign = checkOSMStopSign(ls.lat, ls.lng, osmSignals);
+    if (hasStopSign) {
+      // Stop sign confirmed — this is always unprotected, no override allowed
+      ls.step.type = 'unprotected_left';
+      ls.step.safety = { safe: false, reason: 'Stop sign — turn right, three rights make a left', type: 'unprotected' };
+      continue; // Skip all other checks — stop signs can't have green arrows
     }
 
-    // 2. Check OSM from pre-fetched cache (instant — no API call)
+    // 1. Check community database (already fetched in bulk)
+    const match = matchArrow(ls.lat, ls.lng, communityArrows);
+    if (match.found && match.verified) {
+      // ONLY fully verified (3+ confirmations) can override
+      ls.step.type = 'confirmed_left';
+      ls.step.safety = { safe: true, reason: `Green arrow — community verified (${match.confirmations} drivers)`, type: 'community_verified' };
+      analysis.unprotectedLefts = Math.max(0, analysis.unprotectedLefts - 1);
+      analysis.confirmedLefts = (analysis.confirmedLefts || 0) + 1;
+      continue;
+    }
+    // Unverified reports (1-2 flags) — show info but DON'T override the classification
+    // The left is still treated as unprotected until 3 people verify it
+    if (match.found && !match.verified) {
+      ls.step.safety = {
+        safe: false,
+        reason: `Left blocked — ${match.confirmations}/${COMMUNITY_THRESHOLD} drivers reported green arrow (not yet verified)`,
+        type: 'unprotected'
+      };
+      // Keep type as unprotected_left — still gets rerouted around
+      continue;
+    }
+
+    // 2. Check OSM for signal with green arrow (instant — no API call)
     if (ls.step.type === 'unprotected_left') {
       const signal = checkOSMSignalFromCache(ls.lat, ls.lng, osmSignals);
       if (signal.hasArrow) {
@@ -1016,10 +1027,16 @@ function display(response, a) {
     const d = document.createElement('div');
     d.className = 'stp'; d.style.background = bg; d.style.cursor = 'pointer';
 
-    // Build flag button HTML for unprotected lefts
-    const flagBtnHtml = isUL ? `<button class="flag-arrow-btn" data-idx="${idx}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--cyan);cursor:pointer;white-space:nowrap">🟢 I know this has a green arrow</button>` : '';
-    // Build unflag button for confirmed lefts that were user-confirmed
-    const unflagBtnHtml = (s.type === 'confirmed_left' && (s.safety?.type === 'user_reported' || s.safety?.type === 'community_verified')) ? `<button class="unflag-arrow-btn" data-idx="${idx}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--red);cursor:pointer;white-space:nowrap">✕ Remove my confirmation</button>` : '';
+    // Build flag button HTML for unprotected lefts — but NOT for confirmed stop signs
+    const isStopSign = s.safety?.reason?.toLowerCase().includes('stop sign');
+    const flagBtnHtml = (isUL && !isStopSign) ? `<button class="flag-arrow-btn" data-idx="${idx}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--cyan);cursor:pointer;white-space:nowrap">🟢 I know this has a green arrow</button>` : '';
+    // Build unflag button — show for community verified lefts AND unverified reports
+    const hasUnverifiedReport = s.safety?.reason?.includes('reported green arrow');
+    const unflagBtnHtml = (s.type === 'confirmed_left' && (s.safety?.type === 'community_verified'))
+      ? `<button class="unflag-arrow-btn" data-idx="${idx}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--red);cursor:pointer;white-space:nowrap">✕ Remove my confirmation</button>`
+      : hasUnverifiedReport
+        ? `<button class="unflag-arrow-btn" data-idx="${idx}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--red);cursor:pointer;white-space:nowrap">✕ Remove my flag</button>`
+        : '';
 
     d.innerHTML = `
       <div class="stp-i" style="background:${ib};color:${ic}">${icons[s.type]||'↑'}</div>

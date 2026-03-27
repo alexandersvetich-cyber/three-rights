@@ -1,0 +1,1399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#07090f">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<meta name="description" content="Three rights make a left. Smart navigation that keeps you safe at every turn.">
+<title>Three Rights</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #07090f; --surface: #0f1219; --surface2: #161b26; --border: #1c2333;
+    --cyan: #06d6a0; --cyan-dim: rgba(6,214,160,0.1);
+    --red: #ef4444; --red-dim: rgba(239,68,68,0.1);
+    --green: #22c55e; --green-dim: rgba(34,197,94,0.1);
+    --amber: #f59e0b; --amber-dim: rgba(245,158,11,0.1);
+    --purple: #a78bfa; --purple-dim: rgba(167,139,250,0.1);
+    --text: #e2e8f0; --text2: #64748b; --white: #fff;
+    --font-d: 'Outfit', sans-serif; --font-m: 'DM Mono', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); }
+  body { font-family: var(--font-m); font-size: 13px; }
+  #map { width: 100%; height: 100%; position: absolute; top: 0; left: 0; z-index: 1; }
+
+  /* Loading */
+  #loading-screen {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 9999;
+    background: var(--bg); display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 16px;
+  }
+  .loading-logo { font-family: var(--font-d); font-size: 32px; font-weight: 800; color: var(--white); letter-spacing: -0.03em; }
+  .loading-sub { font-size: 11px; color: var(--cyan); letter-spacing: 0.12em; }
+  .loading-bar { width: 200px; height: 3px; background: var(--surface2); border-radius: 2px; overflow: hidden; }
+  .loading-fill { width: 0%; height: 100%; background: var(--cyan); border-radius: 2px; transition: width 0.3s; }
+  .loading-err { font-size: 11px; color: var(--red); max-width: 300px; text-align: center; line-height: 1.5; display: none; }
+
+  /* Header */
+  #header {
+    position: absolute; top: 0; left: 0; right: 0; z-index: 10;
+    background: linear-gradient(180deg, var(--bg) 0%, transparent 100%);
+    padding: 14px 20px 36px; display: flex; align-items: center; gap: 10; pointer-events: none;
+  }
+  #header > * { pointer-events: auto; }
+  .logo-icon { width: 34px; height: 34px; border-radius: 9px; background: var(--cyan-dim); border: 1px solid rgba(6,214,160,0.2); display: flex; align-items: center; justify-content: center; font-size: 16px; }
+  .logo-text { font-family: var(--font-d); font-size: 16px; font-weight: 800; color: var(--white); letter-spacing: -0.03em; }
+  .logo-sub { font-size: 9px; color: var(--cyan); letter-spacing: 0.12em; font-weight: 500; }
+
+  /* Panels */
+  .panel {
+    position: absolute; top: 76px; left: 16px; width: 370px; z-index: 100;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: 0 24px 64px rgba(0,0,0,0.5); padding: 18px;
+    animation: su 0.3s ease-out;
+  }
+  @keyframes su { from { transform: translateY(16px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+  .f-label { display: flex; align-items: center; gap: 8; margin-bottom: 5; }
+  .f-dot { width: 9px; height: 9px; border-radius: 50%; }
+  .f-dot.from { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
+  .f-dot.to { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .f-name { font-size: 10px; color: var(--text2); font-weight: 500; letter-spacing: 0.06em; }
+
+  .si {
+    width: 100%; padding: 11px 13px; background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 8px; font-family: var(--font-m); font-size: 13px; outline: none;
+  }
+  .si:focus { border-color: var(--cyan); }
+  .si::placeholder { color: var(--text2); }
+
+  .conn { width: 1px; height: 10px; background: var(--border); margin: 3px 0 3px 4px; }
+
+  .nav-btn {
+    width: 100%; padding: 13px; background: var(--cyan); color: var(--bg); border: none; border-radius: 8px;
+    font-family: var(--font-d); font-size: 14px; font-weight: 700; cursor: pointer; margin-top: 14px;
+  }
+  .nav-btn:hover { filter: brightness(1.1); }
+  .nav-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .err { padding: 9px 13px; background: var(--red-dim); border: 1px solid rgba(239,68,68,0.2); border-radius: 8px; font-size: 11px; color: var(--red); margin-top: 10px; line-height: 1.5; display: none; }
+  .tip { margin-top: 12px; font-size: 10px; color: var(--text2); text-align: center; line-height: 1.6; }
+  .tip span { color: var(--cyan); }
+
+  /* Directions */
+  .dp {
+    position: absolute; top: 76px; left: 16px; width: 390px; z-index: 100;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: 0 24px 64px rgba(0,0,0,0.5);
+    max-height: calc(100vh - 100px); overflow: hidden; display: none; flex-direction: column;
+    animation: su 0.3s ease-out;
+  }
+  .dp-hdr { padding: 14px 18px; border-bottom: 1px solid var(--border); }
+  .dp-title { font-family: var(--font-d); font-size: 15px; font-weight: 700; color: var(--white); }
+  .dp-meta { font-size: 12px; color: var(--text2); margin-top: 2px; }
+  .dp-meta b { color: var(--white); font-weight: 600; }
+  .dp-fwy { font-size: 10px; color: var(--cyan); margin-top: 2px; }
+  .dp-traf { font-size: 9px; color: var(--text2); margin-top: 2px; }
+  .bdg-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .bdg { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 14px; font-size: 10px; font-weight: 600; }
+  .nb { padding: 6px 13px; background: transparent; color: var(--text2); border: 1px solid var(--border); border-radius: 6px; font-family: var(--font-m); font-size: 11px; cursor: pointer; }
+  .nb:hover { border-color: var(--cyan); color: var(--cyan); }
+  .steps { flex: 1; overflow-y: auto; }
+  .stp { padding: 11px 15px; border-bottom: 1px solid var(--border); display: flex; gap: 11px; align-items: flex-start; }
+  .stp-i { width: 26px; height: 26px; border-radius: 6px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 13px; margin-top: 2px; }
+  .stp-t { font-size: 12px; color: var(--text); line-height: 1.4; }
+  .stp-n { font-size: 10px; margin-top: 3px; line-height: 1.4; font-style: italic; }
+  .stp-d { font-size: 10px; color: var(--text2); margin-top: 2px; }
+  .dp-ft { padding: 9px 18px; border-top: 1px solid var(--border); font-size: 10px; color: var(--text2); text-align: center; }
+
+  @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.4 } }
+  .ld { animation: pulse 1.2s infinite; }
+
+  @keyframes navPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(6,214,160,0.4); } 50% { box-shadow: 0 0 0 12px rgba(6,214,160,0); } }
+  .nav-active #nav-icon { animation: navPulse 2s infinite; }
+
+  @media (max-width: 640px) {
+    .panel { width: 100%!important; left: 0!important; top: auto!important; bottom: 0!important; border-radius: 16px 16px 0 0!important; max-height: 55vh!important; }
+    .dp { width: 100%!important; left: 0!important; top: auto!important; bottom: 0!important; border-radius: 16px 16px 0 0!important; max-height: 65vh!important; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Loading screen -->
+<div id="loading-screen">
+  <div style="text-align:center">
+    <div style="font-size:32px;margin-bottom:8px">↱↱↱</div>
+    <div class="loading-logo">Three Rights</div>
+    <div class="loading-sub">THREE RIGHTS MAKE A LEFT</div>
+  </div>
+  <div class="loading-bar"><div class="loading-fill" id="load-fill"></div></div>
+  <div class="loading-err" id="load-err"></div>
+</div>
+
+<div id="map"></div>
+
+<div id="header" style="display:none">
+  <div style="display:flex;align-items:center;gap:10">
+    <div class="logo-icon">↱↱</div>
+    <div>
+      <div class="logo-text">THREE RIGHTS</div>
+      <div class="logo-sub">THREE RIGHTS MAKE A LEFT</div>
+    </div>
+  </div>
+</div>
+
+<!-- Search -->
+<div class="panel" id="sp" style="display:none">
+  <div style="margin-bottom:10px">
+    <div class="f-label"><div class="f-dot from"></div><span class="f-name">FROM</span><span id="fs" style="font-size:9px;color:var(--green);margin-left:auto;display:none">✓</span></div>
+    <div style="display:flex;gap:8">
+      <input class="si" id="fi" placeholder="Address, business, or place" autocomplete="off" style="flex:1">
+      <button onclick="useGPS()" id="gps-btn" style="padding:8px 12px;background:var(--surface2);border:1px solid var(--border);color:var(--cyan);border-radius:8px;font-family:var(--font-m);font-size:12px;cursor:pointer;white-space:nowrap" title="Use my location">📍</button>
+    </div>
+  </div>
+  <div class="conn"></div>
+  <div>
+    <div class="f-label"><div class="f-dot to"></div><span class="f-name">TO</span><span id="ts" style="font-size:9px;color:var(--green);margin-left:auto;display:none">✓</span></div>
+    <input class="si" id="ti" placeholder="Address, business, or place" autocomplete="off">
+  </div>
+  <button class="nav-btn" id="nb" onclick="navigate()">NAVIGATE — THREE RIGHTS</button>
+  <div class="err" id="eb"></div>
+  <div class="tip">Works anywhere in the <span>US</span> — real Google Maps with live traffic.<br>Three rights make a left — always.</div>
+</div>
+
+<!-- Directions -->
+<div class="dp" id="dp">
+  <div class="dp-hdr">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div class="dp-title">Route Ready</div>
+        <div class="dp-meta" id="dm"></div>
+        <div class="dp-fwy" id="df"></div>
+        <div class="dp-traf" id="dt"></div>
+      </div>
+      <button class="nb" onclick="clearRoute()">New Route</button>
+    </div>
+    <div class="bdg-row" id="br"></div>
+    <!-- Start/Stop Navigation -->
+    <button id="nav-go" onclick="toggleNavigation()" style="width:100%;margin-top:10px;padding:12px;background:var(--cyan);color:var(--bg);border:none;border-radius:8px;font-family:var(--font-d);font-size:14px;font-weight:700;cursor:pointer;letter-spacing:0.02em">
+      ▶ START NAVIGATION
+    </button>
+  </div>
+  <div class="steps" id="sl"></div>
+  <div class="dp-ft">Three rights make a left · verified green arrows + four-way stops only · tap to flag green arrows</div>
+</div>
+
+<!-- ══════ WAZE-STYLE NAVIGATION HUD (hidden until nav starts) ══════ -->
+<div id="nav-hud" style="display:none">
+  <!-- Top: Next turn card -->
+  <div id="hud-top" style="position:absolute;top:0;left:0;right:0;z-index:200;padding:12px 16px;pointer-events:none">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:16px 18px;box-shadow:0 8px 32px rgba(0,0,0,0.6);pointer-events:auto">
+      <div style="display:flex;align-items:center;gap:14">
+        <div id="hud-arrow" style="width:56px;height:56px;border-radius:14px;background:var(--cyan);display:flex;align-items:center;justify-content:center;font-size:28px;color:var(--bg);font-weight:800;flex-shrink:0">↑</div>
+        <div style="flex:1;min-width:0">
+          <div id="hud-dist" style="font-family:var(--font-d);font-size:26px;font-weight:800;color:var(--white);letter-spacing:-0.03em;line-height:1">—</div>
+          <div id="hud-street" style="font-family:var(--font-d);font-size:13px;color:var(--text);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Waiting for GPS...</div>
+        </div>
+      </div>
+      <!-- After-next preview -->
+      <div id="hud-after" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10">
+        <div id="hud-after-icon" style="width:24px;height:24px;border-radius:6px;background:var(--surface2);display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--text2);flex-shrink:0">↑</div>
+        <div id="hud-after-text" style="font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Then continue straight</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom: ETA bar -->
+  <div id="hud-bottom" style="position:absolute;bottom:0;left:0;right:0;z-index:200;padding:0 16px 16px;pointer-events:none">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px 18px;box-shadow:0 -4px 24px rgba(0,0,0,0.5);pointer-events:auto">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div>
+          <div id="hud-eta" style="font-family:var(--font-d);font-size:22px;font-weight:800;color:var(--cyan);letter-spacing:-0.02em">— min</div>
+          <div id="hud-remaining" style="font-size:11px;color:var(--text2);margin-top:1px">Calculating...</div>
+        </div>
+        <div style="text-align:right">
+          <div id="hud-arrival" style="font-family:var(--font-d);font-size:14px;font-weight:600;color:var(--white)">—:—</div>
+          <div style="font-size:10px;color:var(--text2)">arrival</div>
+        </div>
+        <div style="display:flex;gap:8">
+          <button onclick="toggleMute()" id="mute-btn" style="width:36px;height:36px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);color:var(--cyan);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center" title="Toggle voice">🔊</button>
+          <button onclick="toggleNavigation()" style="width:36px;height:36px;border-radius:8px;background:var(--red);border:none;color:var(--white);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-weight:700" title="Stop navigation">✕</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let map, dirSvc, dirRen, fromAC, toAC, fromP = null, toP = null, mkrs = [], turnMarkers = [];
+
+// ── Load ──
+async function boot() {
+  const fill = document.getElementById('load-fill');
+  fill.style.width = '20%';
+
+  try {
+    const res = await fetch('/api/maps-config');
+    if (!res.ok) throw new Error('API key not configured on server');
+    const { key } = await res.json();
+    fill.style.width = '50%';
+
+    const s = document.createElement('script');
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${key}&libraries=places&callback=initMap`;
+    s.onerror = () => {
+      document.getElementById('load-err').style.display = 'block';
+      document.getElementById('load-err').textContent = 'Google Maps failed to load';
+    };
+    document.head.appendChild(s);
+  } catch (err) {
+    document.getElementById('load-err').style.display = 'block';
+    document.getElementById('load-err').textContent = err.message;
+    return;
+  }
+}
+
+function initMap() {
+  document.getElementById('loading-screen').style.display = 'none';
+  document.getElementById('header').style.display = 'flex';
+  document.getElementById('sp').style.display = 'block';
+
+  map = new google.maps.Map(document.getElementById('map'), {
+    center: { lat: 33.38, lng: -111.85 }, zoom: 11,
+    styles: darkStyle(), disableDefaultUI: true,
+    zoomControl: true, zoomControlOptions: { position: google.maps.ControlPosition.RIGHT_BOTTOM },
+  });
+
+  dirSvc = new google.maps.DirectionsService();
+
+  // No country restriction — works across entire US
+  const opts = {};
+  fromAC = new google.maps.places.Autocomplete(document.getElementById('fi'), opts);
+  toAC = new google.maps.places.Autocomplete(document.getElementById('ti'), opts);
+
+  fromAC.addListener('place_changed', () => {
+    fromP = fromAC.getPlace();
+    document.getElementById('fs').style.display = fromP?.geometry ? 'inline' : 'none';
+    if (fromP?.geometry) map.panTo(fromP.geometry.location);
+  });
+  toAC.addListener('place_changed', () => {
+    toP = toAC.getPlace();
+    document.getElementById('ts').style.display = toP?.geometry ? 'inline' : 'none';
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════
+// SUPABASE — Community Green Arrow Database
+// ══════════════════════════════════════════════════════════════════
+const SUPABASE_URL = 'https://kkmucbjnjzsatjbduvxu.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtrbXVjYmpuanpzYXRqYmR1dnh1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ1NzMzMDIsImV4cCI6MjA5MDE0OTMwMn0.w3rgIEKzHrKMUMYm_iEedmXE8lMs4p6ZIFk-yDVhZyk';
+const COMMUNITY_THRESHOLD = 3; // 3+ confirmations = community verified
+
+async function supabaseRequest(path, method = 'GET', body = null) {
+  const opts = {
+    method,
+    headers: {
+      'apikey': SUPABASE_KEY,
+      'Authorization': `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+      'Prefer': method === 'POST' ? 'return=representation' : undefined,
+    },
+  };
+  if (body) opts.body = JSON.stringify(body);
+  // Remove undefined headers
+  Object.keys(opts.headers).forEach(k => opts.headers[k] === undefined && delete opts.headers[k]);
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, opts);
+  if (!res.ok) throw new Error(`Supabase ${res.status}`);
+  return res.json();
+}
+
+// Fetch all community green arrows near a bounding box
+// (fetches a wider area to cover the entire route at once)
+async function fetchCommunityArrows(bounds) {
+  try {
+    const minLat = bounds.south - 0.01;
+    const maxLat = bounds.north + 0.01;
+    const minLng = bounds.west - 0.01;
+    const maxLng = bounds.east + 0.01;
+    const data = await supabaseRequest(
+      `green_arrows?lat=gte.${minLat}&lat=lte.${maxLat}&lng=gte.${minLng}&lng=lte.${maxLng}&select=*`
+    );
+    return data || [];
+  } catch {
+    return [];
+  }
+}
+
+// Flag a green arrow — either create new entry or increment confirmations
+async function flagGreenArrow(lat, lng) {
+  // Round to 5 decimal places (~1m precision) for matching
+  const rLat = Math.round(lat * 100000) / 100000;
+  const rLng = Math.round(lng * 100000) / 100000;
+
+  try {
+    // Check if arrow already exists nearby (within ~50m)
+    const existing = await supabaseRequest(
+      `green_arrows?lat=gte.${rLat - 0.0005}&lat=lte.${rLat + 0.0005}&lng=gte.${rLng - 0.0005}&lng=lte.${rLng + 0.0005}&select=*`
+    );
+
+    if (existing && existing.length > 0) {
+      // Increment the closest one
+      const closest = existing.reduce((best, a) => {
+        const d = haversine(lat, lng, a.lat, a.lng);
+        return d < best.dist ? { arrow: a, dist: d } : best;
+      }, { arrow: existing[0], dist: Infinity });
+
+      await supabaseRequest(
+        `green_arrows?id=eq.${closest.arrow.id}`,
+        'PATCH',
+        { confirmations: closest.arrow.confirmations + 1, last_confirmed_at: new Date().toISOString() }
+      );
+      return closest.arrow.confirmations + 1;
+    } else {
+      // Create new entry
+      await supabaseRequest('green_arrows', 'POST', {
+        lat: rLat, lng: rLng, confirmations: 1
+      });
+      return 1;
+    }
+  } catch (e) {
+    console.error('Failed to flag arrow:', e);
+    // Fall back to localStorage
+    saveLocalArrow(lat, lng);
+    return 1;
+  }
+}
+
+// Remove a flag (decrement — if it drops to 0, could delete, but we'll just decrement)
+async function unflagGreenArrow(lat, lng) {
+  const rLat = Math.round(lat * 100000) / 100000;
+  const rLng = Math.round(lng * 100000) / 100000;
+  try {
+    const existing = await supabaseRequest(
+      `green_arrows?lat=gte.${rLat - 0.0005}&lat=lte.${rLat + 0.0005}&lng=gte.${rLng - 0.0005}&lng=lte.${rLng + 0.0005}&select=*`
+    );
+    if (existing && existing.length > 0) {
+      const closest = existing[0];
+      const newCount = Math.max(0, closest.confirmations - 1);
+      await supabaseRequest(
+        `green_arrows?id=eq.${closest.id}`,
+        'PATCH',
+        { confirmations: newCount }
+      );
+    }
+  } catch (e) {
+    console.error('Failed to unflag:', e);
+  }
+  removeLocalArrow(lat, lng);
+}
+
+// ── Local fallback (localStorage) for offline or failed requests ──
+function getLocalArrows() {
+  try { return JSON.parse(localStorage.getItem('threeRights_greenArrows') || '[]'); }
+  catch { return []; }
+}
+function saveLocalArrow(lat, lng) {
+  const arrows = getLocalArrows();
+  if (!arrows.some(a => haversine(a.lat, a.lng, lat, lng) < 50)) {
+    arrows.push({ lat, lng, ts: Date.now() });
+    localStorage.setItem('threeRights_greenArrows', JSON.stringify(arrows));
+  }
+}
+function removeLocalArrow(lat, lng) {
+  let arrows = getLocalArrows();
+  arrows = arrows.filter(a => haversine(a.lat, a.lng, lat, lng) >= 50);
+  localStorage.setItem('threeRights_greenArrows', JSON.stringify(arrows));
+}
+
+// Check if a point matches any community or local arrows
+function matchArrow(lat, lng, communityArrows) {
+  // Check community database first
+  for (const a of communityArrows) {
+    if (haversine(lat, lng, a.lat, a.lng) < 50) {
+      return {
+        found: true,
+        confirmations: a.confirmations,
+        verified: a.confirmations >= COMMUNITY_THRESHOLD,
+        source: 'community',
+      };
+    }
+  }
+  // Check local fallback
+  const localArrows = getLocalArrows();
+  for (const a of localArrows) {
+    if (haversine(lat, lng, a.lat, a.lng) < 50) {
+      return { found: true, confirmations: 1, verified: false, source: 'local' };
+    }
+  }
+  return { found: false };
+}
+
+// ── OSM Overpass API: Check for traffic signals near a point ──
+async function checkOSMSignal(lat, lng) {
+  const radius = 35;
+  const query = `[out:json][timeout:5];node["highway"="traffic_signals"](around:${radius},${lat},${lng});out tags;`;
+  try {
+    const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
+    if (!res.ok) return { hasSignal: false, hasArrow: false };
+    const data = await res.json();
+    if (!data.elements || data.elements.length === 0) return { hasSignal: false, hasArrow: false };
+
+    let hasArrow = false;
+    for (const el of data.elements) {
+      const tags = el.tags || {};
+      if (tags['traffic_signals:turn'] && tags['traffic_signals:turn'].includes('left')) hasArrow = true;
+      if (tags['traffic_signals:turn:forward'] && tags['traffic_signals:turn:forward'].includes('left')) hasArrow = true;
+      if (tags['traffic_signals:turn:backward'] && tags['traffic_signals:turn:backward'].includes('left')) hasArrow = true;
+      if (tags['traffic_signals:protected_turn_left'] === 'yes') hasArrow = true;
+    }
+    return { hasSignal: true, hasArrow };
+  } catch {
+    return { hasSignal: false, hasArrow: false };
+  }
+}
+
+// ── Navigate ──
+async function navigate() {
+  const fi = document.getElementById('fi').value.trim();
+  const ti = document.getElementById('ti').value.trim();
+  if (!fi || !ti) return showErr('Enter both a start and destination');
+
+  const btn = document.getElementById('nb');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="ld">FINDING SAFE ROUTE...</span>';
+  hideErr();
+
+  try {
+    const result = await new Promise((res, rej) => {
+      dirSvc.route({
+        origin: fromP?.geometry ? fromP.geometry.location : fi,
+        destination: toP?.geometry ? toP.geometry.location : ti,
+        travelMode: 'DRIVING',
+        provideRouteAlternatives: true,
+        drivingOptions: { departureTime: new Date(), trafficModel: 'bestguess' },
+      }, (r, s) => s === 'OK' ? res(r) : rej(s));
+    });
+
+    btn.innerHTML = '<span class="ld">CHECKING TRAFFIC SIGNALS...</span>';
+
+    // Get route bounds for batch community arrow fetch
+    const bounds = { north: -90, south: 90, east: -180, west: 180 };
+    result.routes.forEach(r => r.legs.forEach(leg => {
+      leg.steps.forEach(step => {
+        const lat = step.start_location.lat(), lng = step.start_location.lng();
+        if (lat > bounds.north) bounds.north = lat;
+        if (lat < bounds.south) bounds.south = lat;
+        if (lng > bounds.east) bounds.east = lng;
+        if (lng < bounds.west) bounds.west = lng;
+      });
+    }));
+
+    // Fetch ALL community arrows for the route area in one query
+    const communityArrows = await fetchCommunityArrows(bounds);
+
+    // Analyze all routes with road-type inference first
+    const analyzed = result.routes.map((r, i) => analyze(r, i));
+
+    // Then verify left turns against community DB + OSM
+    for (const a of analyzed) {
+      await verifyLeftTurns(a, result.routes[a.routeIndex], communityArrows);
+    }
+
+    analyzed.sort((a, b) => a.unprotectedLefts !== b.unprotectedLefts ? a.unprotectedLefts - b.unprotectedLefts : a.dur - b.dur);
+    display(result, analyzed[0]);
+  } catch (e) {
+    showErr(`Route failed: ${e}. Check addresses.`);
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'NAVIGATE — THREE RIGHTS';
+}
+
+// ── Verify left turns against community DB, OSM, and local cache ──
+async function verifyLeftTurns(analysis, route, communityArrows) {
+  const leftSteps = [];
+  let stepIdx = 0;
+
+  route.legs.forEach(leg => {
+    leg.steps.forEach(step => {
+      const s = analysis.steps[stepIdx];
+      if (s && (s.type === 'unprotected_left' || s.type === 'fourway_left')) {
+        leftSteps.push({
+          idx: stepIdx,
+          lat: step.start_location.lat(),
+          lng: step.start_location.lng(),
+          step: s,
+        });
+      }
+      stepIdx++;
+    });
+  });
+
+  for (const ls of leftSteps) {
+    // 1. Check community database (already fetched in bulk)
+    const match = matchArrow(ls.lat, ls.lng, communityArrows);
+    if (match.found) {
+      if (match.verified) {
+        // 3+ users confirmed → community verified → fully trusted
+        ls.step.type = 'confirmed_left';
+        ls.step.safety = { safe: true, reason: `Green arrow — community verified (${match.confirmations} drivers)`, type: 'community_verified' };
+        if (ls.step.type !== 'fourway_left') {
+          analysis.unprotectedLefts = Math.max(0, analysis.unprotectedLefts - 1);
+        }
+        analysis.confirmedLefts = (analysis.confirmedLefts || 0) + 1;
+        continue;
+      } else {
+        // 1-2 users reported → show but with lower confidence
+        ls.step.type = 'confirmed_left';
+        ls.step.safety = { safe: true, reason: `Green arrow reported (${match.confirmations}/${COMMUNITY_THRESHOLD} needed to verify)`, type: 'user_reported' };
+        if (ls.step.type !== 'fourway_left') {
+          analysis.unprotectedLefts = Math.max(0, analysis.unprotectedLefts - 1);
+        }
+        analysis.confirmedLefts = (analysis.confirmedLefts || 0) + 1;
+        continue;
+      }
+    }
+
+    // 2. Check OSM for signal data (only for unprotected lefts)
+    if (ls.step.type === 'unprotected_left') {
+      const signal = await checkOSMSignal(ls.lat, ls.lng);
+      if (signal.hasArrow) {
+        ls.step.type = 'confirmed_left';
+        ls.step.safety = { safe: true, reason: 'Green arrow verified (OpenStreetMap)', type: 'osm_verified' };
+        analysis.unprotectedLefts = Math.max(0, analysis.unprotectedLefts - 1);
+        analysis.confirmedLefts = (analysis.confirmedLefts || 0) + 1;
+      } else if (signal.hasSignal && !signal.hasArrow) {
+        ls.step.safety.reason = 'Traffic signal — no green arrow confirmed. Tap to flag if arrow exists';
+      }
+    }
+  }
+}
+
+// ── Analyze ──
+function analyze(route, idx) {
+  const steps = []; let uLeft = 0, fourWay = 0, dur = 0; let hasFwy = false; const fwys = new Set();
+
+  // Collect all steps first so we can look ahead/behind for context
+  const allSteps = [];
+  route.legs.forEach(leg => {
+    dur += leg.duration_in_traffic?.value || leg.duration.value;
+    leg.steps.forEach(step => allSteps.push(step));
+  });
+
+  allSteps.forEach((step, stepIdx) => {
+    const m = step.maneuver || '';
+    const ins = step.instructions || '';
+    const insL = ins.toLowerCase();
+
+    const isFwy = insL.includes('merge onto') || insL.includes('i-10') || insL.includes('i-17') ||
+      insL.includes('loop 101') || insL.includes('loop 202') || insL.includes('us-60') || insL.includes('us 60') ||
+      insL.includes('sr 51') || insL.includes('sr-51') || insL.includes('az-51') || insL.includes('az 51') ||
+      insL.includes('loop 303') || insL.includes('loop 60') || insL.includes('highway') ||
+      insL.includes('l-101') || insL.includes('l-202') || insL.includes('l-303') ||
+      m === 'merge' || m === 'ramp-right';
+
+    const isLeft = m === 'turn-left' || m === 'turn-slight-left' || m === 'turn-sharp-left' || m === 'fork-left' || m === 'ramp-left';
+
+    if (isFwy) {
+      hasFwy = true;
+      const fm = ins.match(/(I-\d+|Loop \d+|US[ -]?\d+|SR[ -]?\d+|L-\d+|AZ[ -]?\d+)/i);
+      if (fm) fwys.add(fm[1]);
+    }
+
+    let type = 'straight', safety = null;
+
+    if (isLeft && !isFwy) {
+      // ═══════════════════════════════════════════════════════════════
+      // LEFT-TURN POLICY — ABSOLUTE
+      //
+      // NEVER turn left on a solid green light. We cannot verify from
+      // the API whether a green arrow exists, so we DO NOT assume one.
+      // Yes, this increases travel time. That is the point.
+      // Three rights make a left — that's the whole app.
+      //
+      // THE ONLY LEFT TURNS ALLOWED:
+      //   Four-way stops — both roads are residential/local,
+      //   all traffic is stopped, safe to turn any direction.
+      //
+      // EVERYTHING ELSE IS BLOCKED:
+      //   - Solid green light (might be permissive, no arrow)
+      //   - Two-way stop signs (turn right instead)
+      //   - Flashing yellow arrows
+      //   - Any signalized intersection (can't confirm green arrow)
+      //   - Any uncontrolled intersection
+      //
+      // The app will route around these using three right turns.
+      // ═══════════════════════════════════════════════════════════════
+
+      // Get the street name being turned ONTO
+      const ontoMatch = insL.match(/(?:turn left onto|turn slight left onto|turn sharp left onto)\s+(.+)/);
+      const ontoStreet = ontoMatch ? ontoMatch[1].replace(/<[^>]*>/g, '').trim() : '';
+
+      // Get the PREVIOUS step to know what road we're currently on
+      const prevStep = stepIdx > 0 ? allSteps[stepIdx - 1] : null;
+      const prevIns = prevStep ? (prevStep.instructions || '').toLowerCase() : '';
+      const prevDist = prevStep ? prevStep.distance.value : 0;
+
+      // Get the NEXT step for additional context
+      const nextStep = stepIdx < allSteps.length - 1 ? allSteps[stepIdx + 1] : null;
+      const nextDist = nextStep ? nextStep.distance.value : 0;
+
+      // ── ROAD TYPE PATTERNS ──
+
+      // Major arterials — ANY left here is blocked (can't confirm green arrow)
+      const majorRoadPattern = /\b(blvd|boulevard|ave|avenue|pkwy|parkway|hwy|highway|expressway|main\s+st|broadway|mlk|martin luther king|baseline|mcdowell|indian school|camelback|thomas|mcdonald|southern|apache|university|rural|country club|dobson|alma school|gilbert|lindsay|greenfield|higley|power|signal butte|ellsworth|val vista|stapley|center|elliot|warner|ray|chandler|williams field|riggs|queen creek|germann|ocotillo|guadalupe|rio salado|curry|mckellips|brown|mccormick|scottsdale|hayden|pima|shea|cactus|thunderbird|bell|greenway|dunlap|northern|glendale|bethany home|missouri|osborn|oak|van buren|buckeye|lower buckeye|dobbins|south mountain|pecos|chandler heights|veterans|towne center|market|state\s+st|state\s+rd|county\s+rd|us\s+\d|sr\s+\d|route\s+\d)\b/i;
+
+      // Residential / local street indicators — four-way stop candidates
+      const residentialPattern = /\b(ln|lane|ct|court|cir|circle|way|pl|place|loop|trail|trl|path|run|terrace|ter|bend|cove|cv|ridge|knoll|view|glen|meadow|creek|hollow|crossing|xing|pass|point|pt|grove|wood|woods|dale|vale|field|garden|spring|lake|pond|hill|heights|manor|estates|village|ranch|park)\b/i;
+
+      // Generic street types (St, Rd, Dr) — could be residential in context
+      const genericStreetPattern = /\b(st|street|rd|road|dr|drive)\b/i;
+
+      const turningOntoMajor = majorRoadPattern.test(ontoStreet);
+      const currentlyOnMajor = majorRoadPattern.test(prevIns);
+      const turningOntoResidential = residentialPattern.test(ontoStreet);
+      const currentlyOnResidential = residentialPattern.test(prevIns);
+      const ontoGeneric = genericStreetPattern.test(ontoStreet) && !turningOntoMajor;
+      const currentGeneric = genericStreetPattern.test(prevIns) && !currentlyOnMajor;
+
+      // ── FOUR-WAY STOP DETECTION ──
+      // The ONLY scenario where a left is allowed:
+      // Both roads must be residential/local — no major roads involved.
+      // This means we're in a neighborhood where intersections are
+      // four-way stops with all traffic stopped.
+      const bothResidential = (turningOntoResidential || (ontoGeneric && step.distance.value < 400))
+        && (currentlyOnResidential || (currentGeneric && prevDist < 400));
+      const neighborhoodGrid = step.distance.value < 300 && nextDist > 0 && nextDist < 300
+        && !turningOntoMajor && !currentlyOnMajor;
+
+      // If EITHER road is a major road → NOT a four-way stop → BLOCKED
+      const eitherMajor = turningOntoMajor || currentlyOnMajor;
+
+      // ── CLASSIFY ──
+      if (!eitherMajor && (bothResidential || neighborhoodGrid)) {
+        // Both roads residential, no major roads → four-way stop → ALLOWED
+        type = 'fourway_left'; fourWay++;
+        safety = { safe: true, reason: 'Four-way stop — all traffic stops', type: 'fourway' };
+      } else {
+        // EVERYTHING ELSE → BLOCKED
+        // This includes:
+        // - Major road to major road (might have green arrow, might not — can't confirm)
+        // - Major road to minor road (likely no green arrow)
+        // - Minor road to major road (two-way stop — turn right instead)
+        // - Any signalized intersection (solid green ≠ green arrow)
+        type = 'unprotected_left'; uLeft++;
+        let reason = 'Left turn blocked — three rights instead';
+        if (turningOntoMajor && currentlyOnMajor) {
+          reason = 'Cannot confirm green arrow — go past and make three rights';
+        } else if (turningOntoMajor) {
+          reason = 'Turning onto busy road — go past and make three rights';
+        } else if (currentlyOnMajor) {
+          reason = 'No confirmed green arrow — go past and make three rights';
+        } else {
+          reason = 'Stop sign — turn right, three rights make a left';
+        }
+        safety = { safe: false, reason, type: 'unprotected' };
+      }
+    } else if (m.includes('right')) type = 'right';
+    else if (m === 'merge' || m === 'ramp-right') type = 'merge';
+    else if (m.includes('fork') || m.includes('ramp')) type = 'exit';
+    else if (isFwy) type = 'freeway';
+
+    steps.push({
+      instruction: ins.replace(/<[^>]*>/g, ''),
+      distance: step.distance.text, duration: step.duration.text,
+      type, maneuver: m, safety, isFreeway: isFwy,
+    });
+  });
+
+  return {
+    routeIndex: idx, steps, unprotectedLefts: uLeft, protectedLefts: 0, fourWayLefts: fourWay,
+    dur, usesFreeway: hasFwy, fwyNames: [...fwys],
+    distText: route.legs[0].distance.text,
+    durText: route.legs[0].duration_in_traffic?.text || route.legs[0].duration.text,
+  };
+}
+
+// ── Display ──
+function display(response, a) {
+  clearOverlays();
+
+  // Store for navigation engine
+  routeResponse = response;
+  routeAnalysis = a;
+
+  dirRen = new google.maps.DirectionsRenderer({
+    map, directions: response, routeIndex: a.routeIndex,
+    polylineOptions: { strokeColor: '#06d6a0', strokeWeight: 5, strokeOpacity: 0.85 },
+    suppressMarkers: true, suppressInfoWindows: true,
+  });
+
+  const r = response.routes[a.routeIndex];
+  const sL = r.legs[0].start_location, eL = r.legs[r.legs.length-1].end_location;
+
+  // ── Start & End markers ──
+  mkrs.push(new google.maps.Marker({
+    position: sL, map, zIndex: 100,
+    icon: { path: google.maps.SymbolPath.CIRCLE, scale: 12, fillColor: '#06d6a0', fillOpacity: 1, strokeColor: '#07090f', strokeWeight: 3 },
+  }));
+  mkrs.push(new google.maps.Marker({
+    position: eL, map, zIndex: 100,
+    icon: { path: google.maps.SymbolPath.CIRCLE, scale: 12, fillColor: '#22c55e', fillOpacity: 1, strokeColor: '#07090f', strokeWeight: 3 },
+  }));
+
+  // ── Turn markers at every maneuver point ──
+  const turnColors = {
+    right: '#06d6a0',          // cyan — safe right turn
+    merge: '#3b82f6',          // blue — freeway merge
+    exit: '#3b82f6',           // blue — freeway exit
+    freeway: '#3b82f6',        // blue — on freeway
+    fourway_left: '#22c55e',   // green — four-way stop (safe)
+    confirmed_left: '#22c55e', // green — green arrow confirmed (OSM or user)
+    unprotected_left: '#ef4444', // red — ALL other lefts (BLOCKED)
+    straight: null,            // no marker for straight
+  };
+  const turnSymbols = {
+    right: '↱', merge: '⇢', exit: '⤵', freeway: '🛣',
+    fourway_left: '↰', confirmed_left: '↰', unprotected_left: '⚠',
+  };
+
+  let stepNum = 0;
+  r.legs.forEach(leg => {
+    leg.steps.forEach((step, i) => {
+      const m = step.maneuver || '';
+      const stepType = a.steps[stepNum]?.type || 'straight';
+      const color = turnColors[stepType];
+
+      if (color && stepType !== 'straight') {
+        const label = turnSymbols[stepType] || '•';
+        const pos = step.start_location;
+
+        // Create custom marker
+        const marker = new google.maps.Marker({
+          position: pos, map, zIndex: 50,
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 9,
+            fillColor: color,
+            fillOpacity: 0.9,
+            strokeColor: '#07090f',
+            strokeWeight: 2,
+          },
+          title: step.instructions.replace(/<[^>]*>/g, ''),
+        });
+
+        // Info window on click
+        const infoContent = `
+          <div style="font-family:'DM Mono',monospace;font-size:12px;color:#1a1a2e;max-width:220px;line-height:1.5">
+            <div style="font-weight:600;margin-bottom:4px">${step.instructions.replace(/<[^>]*>/g, '')}</div>
+            <div style="font-size:11px;color:#666">${step.distance.text} · ${step.duration.text}</div>
+            ${a.steps[stepNum]?.safety ? `<div style="font-size:11px;margin-top:4px;color:${stepType === 'unprotected_left' ? '#ef4444' : '#22c55e'}">${a.steps[stepNum].safety.reason}</div>` : ''}
+          </div>
+        `;
+        const infoWindow = new google.maps.InfoWindow({ content: infoContent });
+        marker.addListener('click', () => infoWindow.open(map, marker));
+
+        mkrs.push(marker);
+        turnMarkers.push({ marker, stepIdx: stepNum, type: stepType, lat: pos.lat(), lng: pos.lng() });
+      }
+      stepNum++;
+    });
+  });
+
+  document.getElementById('sp').style.display = 'none';
+  const dp = document.getElementById('dp');
+  dp.style.display = 'flex';
+
+  document.getElementById('dm').innerHTML = `${a.distText} · <b>${a.durText}</b>`;
+  document.getElementById('df').textContent = a.usesFreeway ? `🛣 Via ${a.fwyNames.join(' → ')}` : '';
+  document.getElementById('dt').textContent = `Live traffic · ${a.unprotectedLefts === 0 ? 'zero' : a.unprotectedLefts} unprotected left${a.unprotectedLefts !== 1 ? 's' : ''}`;
+
+  const br = document.getElementById('br');
+  br.innerHTML = '';
+  if (a.unprotectedLefts === 0) br.innerHTML += bdg('✓ Zero unprotected lefts', '--green');
+  else br.innerHTML += bdg(`⚠ ${a.unprotectedLefts} left${a.unprotectedLefts>1?'s':''} blocked — three rights instead`, '--red');
+  if ((a.confirmedLefts || 0) > 0) br.innerHTML += bdg(`🟢 ${a.confirmedLefts} green arrow${a.confirmedLefts>1?'s':''} verified`, '--green');
+  if (a.fourWayLefts > 0) br.innerHTML += bdg(`🟢 ${a.fourWayLefts} four-way stop left${a.fourWayLefts>1?'s':''}`, '--green');
+  if (a.usesFreeway) br.innerHTML += bdg('🛣 Freeway', '--cyan');
+
+  const sl = document.getElementById('sl');
+  sl.innerHTML = '';
+  const icons = { straight:'↑', right:'↱', merge:'⇢', exit:'⤵', freeway:'🛣', fourway_left:'↰', confirmed_left:'↰', unprotected_left:'⚠' };
+
+  a.steps.forEach((s, idx) => {
+    const isPL = s.type==='fourway_left' || s.type==='confirmed_left', isUL = s.type==='unprotected_left';
+    const isF = s.type==='freeway'||s.type==='merge'||s.type==='exit';
+    const bg = isUL?'var(--red-dim)':isPL?'var(--green-dim)':isF?'var(--cyan-dim)':'transparent';
+    const ib = isUL?'var(--red)':isPL?'var(--green)':isF?'var(--cyan)':'var(--surface2)';
+    const ic = (isUL||isPL||isF)?'var(--white)':'var(--text2)';
+
+    const d = document.createElement('div');
+    d.className = 'stp'; d.style.background = bg; d.style.cursor = 'pointer';
+
+    // Build flag button HTML for unprotected lefts
+    const flagBtnHtml = isUL ? `<button class="flag-arrow-btn" data-idx="${idx}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--cyan);cursor:pointer;white-space:nowrap">🟢 I know this has a green arrow</button>` : '';
+    // Build unflag button for confirmed lefts that were user-confirmed
+    const unflagBtnHtml = (s.type === 'confirmed_left' && (s.safety?.type === 'user_reported' || s.safety?.type === 'community_verified')) ? `<button class="unflag-arrow-btn" data-idx="${idx}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--red);cursor:pointer;white-space:nowrap">✕ Remove my confirmation</button>` : '';
+
+    d.innerHTML = `
+      <div class="stp-i" style="background:${ib};color:${ic}">${icons[s.type]||'↑'}</div>
+      <div style="flex:1;min-width:0">
+        <div class="stp-t" style="${isF?'color:var(--cyan);font-weight:600':''}">${s.instruction}</div>
+        ${s.safety?`<div class="stp-n" style="color:${isUL?'var(--red)':'var(--green)'}">${isUL?'⚠':'🟢'} ${s.safety.reason}</div>`:''}
+        ${isF&&s.type==='merge'?'<div class="stp-n" style="color:var(--cyan)">Right-side merge — no left turns on freeways</div>':''}
+        <div class="stp-d">${s.distance} · ${s.duration}</div>
+        ${flagBtnHtml}${unflagBtnHtml}
+      </div>`;
+
+    // Click step → pan map to that turn
+    d.addEventListener('click', () => {
+      const tm = turnMarkers.find(t => t.stepIdx === idx);
+      if (tm) {
+        map.panTo({ lat: tm.lat, lng: tm.lng });
+        map.setZoom(17);
+        // Bounce the marker
+        tm.marker.setAnimation(google.maps.Animation.BOUNCE);
+        setTimeout(() => tm.marker.setAnimation(null), 1500);
+      }
+    });
+
+    sl.appendChild(d);
+  });
+
+  // ── Flag button handlers (community database) ──
+  sl.querySelectorAll('.flag-arrow-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const stepIdx = parseInt(btn.dataset.idx);
+      const tm = turnMarkers.find(t => t.stepIdx === stepIdx);
+      if (tm) {
+        btn.textContent = '...saving';
+        btn.disabled = true;
+        flagGreenArrow(tm.lat, tm.lng).then(count => {
+          btn.textContent = `✓ Flagged (${count}/${COMMUNITY_THRESHOLD})`;
+          btn.style.color = 'var(--green)';
+          btn.style.borderColor = 'var(--green)';
+          // Re-run display after short delay
+          setTimeout(() => {
+            if (routeResponse && routeAnalysis) {
+              const reAnalyzed = routeResponse.routes.map((r, i) => analyze(r, i));
+              (async () => {
+                const bounds = { north: -90, south: 90, east: -180, west: 180 };
+                routeResponse.routes.forEach(r => r.legs.forEach(leg => {
+                  leg.steps.forEach(step => {
+                    const lat = step.start_location.lat(), lng = step.start_location.lng();
+                    if (lat > bounds.north) bounds.north = lat;
+                    if (lat < bounds.south) bounds.south = lat;
+                    if (lng > bounds.east) bounds.east = lng;
+                    if (lng < bounds.west) bounds.west = lng;
+                  });
+                }));
+                const arrows = await fetchCommunityArrows(bounds);
+                for (const ra of reAnalyzed) {
+                  await verifyLeftTurns(ra, routeResponse.routes[ra.routeIndex], arrows);
+                }
+                reAnalyzed.sort((a, b) => a.unprotectedLefts !== b.unprotectedLefts ? a.unprotectedLefts - b.unprotectedLefts : a.dur - b.dur);
+                display(routeResponse, reAnalyzed[0]);
+              })();
+            }
+          }, 500);
+        }).catch(() => {
+          btn.textContent = '✕ Failed — try again';
+          btn.disabled = false;
+        });
+      }
+    });
+  });
+  sl.querySelectorAll('.unflag-arrow-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const stepIdx = parseInt(btn.dataset.idx);
+      const tm = turnMarkers.find(t => t.stepIdx === stepIdx);
+      if (tm) {
+        btn.textContent = '...removing';
+        btn.disabled = true;
+        unflagGreenArrow(tm.lat, tm.lng).then(() => {
+          if (routeResponse && routeAnalysis) {
+            const reAnalyzed = routeResponse.routes.map((r, i) => analyze(r, i));
+            (async () => {
+              const bounds = { north: -90, south: 90, east: -180, west: 180 };
+              routeResponse.routes.forEach(r => r.legs.forEach(leg => {
+                leg.steps.forEach(step => {
+                  const lat = step.start_location.lat(), lng = step.start_location.lng();
+                  if (lat > bounds.north) bounds.north = lat;
+                  if (lat < bounds.south) bounds.south = lat;
+                  if (lng > bounds.east) bounds.east = lng;
+                  if (lng < bounds.west) bounds.west = lng;
+                });
+              }));
+              const arrows = await fetchCommunityArrows(bounds);
+              for (const ra of reAnalyzed) {
+                await verifyLeftTurns(ra, routeResponse.routes[ra.routeIndex], arrows);
+              }
+              reAnalyzed.sort((a, b) => a.unprotectedLefts !== b.unprotectedLefts ? a.unprotectedLefts - b.unprotectedLefts : a.dur - b.dur);
+              display(routeResponse, reAnalyzed[0]);
+            })();
+          }
+        });
+      }
+    });
+  });
+}
+
+function bdg(text, color) {
+  return `<div class="bdg" style="background:var(${color}-dim);color:var(${color});border:1px solid rgba(0,0,0,0.1)">${text}</div>`;
+}
+
+function clearOverlays() {
+  if (dirRen) { dirRen.setMap(null); dirRen = null; }
+  mkrs.forEach(m => m.setMap(null)); mkrs = [];
+  turnMarkers = [];
+}
+
+function clearRoute() {
+  if (navActive) stopNavigation();
+  clearOverlays();
+  routeResponse = null;
+  routeAnalysis = null;
+  document.getElementById('dp').style.display = 'none';
+  document.getElementById('sp').style.display = 'block';
+  document.getElementById('fi').value = ''; document.getElementById('ti').value = '';
+  document.getElementById('fs').style.display = 'none'; document.getElementById('ts').style.display = 'none';
+  fromP = null; toP = null; hideErr();
+}
+
+function showErr(m) { const e = document.getElementById('eb'); e.textContent = m; e.style.display = 'block'; }
+function hideErr() { document.getElementById('eb').style.display = 'none'; }
+
+// ============================================================
+// LIVE GPS NAVIGATION WITH VOICE
+// ============================================================
+let navActive = false;
+let navMuted = false;
+let watchId = null;
+let navSteps = [];       // decoded steps with lat/lng
+let currentStepIdx = 0;
+let locationMarker = null;
+let lastSpokenIdx = -1;
+let routeResponse = null;
+let routeAnalysis = null;
+
+const ANNOUNCE_DISTANCE = 200;  // meters — announce when this close to next turn
+const ARRIVE_DISTANCE = 30;     // meters — advance to next step
+const REANOUNCE_DISTANCE = 50;  // meters — re-announce when very close
+
+function toggleNavigation() {
+  if (navActive) stopNavigation();
+  else startNavigation();
+}
+
+function startNavigation() {
+  if (!navigator.geolocation) { showErr('GPS not available'); return; }
+  if (!routeResponse || !routeAnalysis) return;
+
+  navActive = true;
+  currentStepIdx = 0;
+  lastSpokenIdx = -1;
+
+  document.body.classList.add('nav-active');
+
+  // Hide directions panel, show full-screen HUD
+  document.getElementById('dp').style.display = 'none';
+  document.getElementById('nav-hud').style.display = 'block';
+  document.getElementById('header').style.display = 'none';
+
+  // Tilt map for driving perspective
+  map.setTilt(45);
+  map.setZoom(17);
+
+  // Keep screen awake during navigation
+  if ('wakeLock' in navigator) {
+    navigator.wakeLock.request('screen').catch(() => {});
+  }
+
+  // Decode all step locations from the route
+  navSteps = [];
+  const route = routeResponse.routes[routeAnalysis.routeIndex];
+  route.legs.forEach(leg => {
+    leg.steps.forEach((step, i) => {
+      navSteps.push({
+        lat: step.start_location.lat(),
+        lng: step.start_location.lng(),
+        endLat: step.end_location.lat(),
+        endLng: step.end_location.lng(),
+        instruction: step.instructions.replace(/<[^>]*>/g, ''),
+        distance: step.distance.text,
+        distanceMeters: step.distance.value,
+        duration: step.duration.text,
+        maneuver: step.maneuver || '',
+      });
+    });
+  });
+
+  // Start watching position
+  watchId = navigator.geolocation.watchPosition(
+    onPositionUpdate,
+    (err) => {
+      document.getElementById('nav-instruction').textContent = 'GPS signal lost — move to open area';
+    },
+    { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
+  );
+
+  // Initial voice
+  speak('Navigation started. Follow the route.');
+  updateNavUI();
+}
+
+function stopNavigation() {
+  navActive = false;
+  document.body.classList.remove('nav-active');
+  if (watchId !== null) {
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+  }
+  if (locationMarker) { locationMarker.setMap(null); locationMarker = null; }
+
+  // Restore UI
+  document.getElementById('nav-hud').style.display = 'none';
+  document.getElementById('dp').style.display = 'flex';
+  document.getElementById('header').style.display = 'flex';
+
+  // Reset map perspective
+  map.setTilt(0);
+  map.setZoom(12);
+
+  // Re-fit to route bounds
+  if (routeResponse && routeAnalysis) {
+    const route = routeResponse.routes[routeAnalysis.routeIndex];
+    const bounds = new google.maps.LatLngBounds();
+    route.legs.forEach(leg => { bounds.extend(leg.start_location); bounds.extend(leg.end_location); });
+    map.fitBounds(bounds, 60);
+  }
+
+  speak('Navigation ended.');
+}
+
+function onPositionUpdate(pos) {
+  if (!navActive || navSteps.length === 0) return;
+
+  const lat = pos.coords.latitude;
+  const lng = pos.coords.longitude;
+  const accuracy = pos.coords.accuracy;
+
+  // Update location marker on map
+  if (!locationMarker) {
+    locationMarker = new google.maps.Marker({
+      position: { lat, lng }, map,
+      icon: {
+        path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
+        scale: 7, fillColor: '#06d6a0', fillOpacity: 1,
+        strokeColor: '#07090f', strokeWeight: 2, rotation: pos.coords.heading || 0,
+      },
+      zIndex: 999,
+    });
+  } else {
+    locationMarker.setPosition({ lat, lng });
+    if (pos.coords.heading) {
+      const icon = locationMarker.getIcon();
+      icon.rotation = pos.coords.heading;
+      locationMarker.setIcon(icon);
+    }
+  }
+
+  // Keep map centered on user with heading rotation
+  map.panTo({ lat, lng });
+  if (map.getZoom() < 16) map.setZoom(17);
+  // Rotate map to heading (driving direction) if available
+  if (pos.coords.heading && pos.coords.heading > 0) {
+    map.setHeading(pos.coords.heading);
+  }
+
+  // Find distance to current step's end point
+  const step = navSteps[currentStepIdx];
+  if (!step) { finishNavigation(); return; }
+
+  const distToEnd = haversine(lat, lng, step.endLat, step.endLng);
+
+  // Check if we've reached the end of current step
+  if (distToEnd < ARRIVE_DISTANCE && currentStepIdx < navSteps.length - 1) {
+    currentStepIdx++;
+    lastSpokenIdx = -1; // allow new announcement
+    updateNavUI();
+  }
+
+  // Look ahead: distance to NEXT step's start (the turn point)
+  const nextIdx = currentStepIdx + 1;
+  if (nextIdx < navSteps.length) {
+    const nextStep = navSteps[nextIdx];
+    const distToTurn = haversine(lat, lng, nextStep.lat, nextStep.lng);
+
+    // Update HUD distance countdown
+    document.getElementById('hud-dist').textContent = formatNavDist(distToTurn);
+
+    // Announce upcoming turn
+    if (distToTurn < ANNOUNCE_DISTANCE && lastSpokenIdx !== nextIdx) {
+      const distText = distToTurn < 100 ? '' : `In ${Math.round(distToTurn / 50) * 50} meters, `;
+      announceStep(nextStep, distText);
+      lastSpokenIdx = nextIdx;
+    }
+
+    // Re-announce when very close
+    if (distToTurn < REANOUNCE_DISTANCE && lastSpokenIdx === nextIdx) {
+      const m = nextStep.maneuver;
+      if (m.includes('left')) speak('Turn left now');
+      else if (m.includes('right')) speak('Turn right now');
+      else if (m === 'merge') speak('Merge now');
+      lastSpokenIdx = nextIdx + 0.5; // prevent re-re-announce
+    }
+  } else {
+    // On last step — show distance to destination
+    document.getElementById('hud-dist').textContent = formatNavDist(distToEnd);
+  }
+
+  // Update ETA in HUD
+  let remainingMeters = 0;
+  for (let i = currentStepIdx; i < navSteps.length; i++) {
+    remainingMeters += navSteps[i].distanceMeters;
+  }
+  const remainingMiles = remainingMeters * 0.000621371;
+  const etaMin = Math.max(Math.round(remainingMiles / 30 * 60), 1);
+  document.getElementById('hud-eta').textContent = `${etaMin} min`;
+  document.getElementById('hud-remaining').textContent = formatNavDist(remainingMeters) + ' remaining';
+
+  // Arrival time
+  const arrivalTime = new Date(Date.now() + etaMin * 60000);
+  const arrH = arrivalTime.getHours();
+  const arrM = arrivalTime.getMinutes();
+  document.getElementById('hud-arrival').textContent = `${arrH > 12 ? arrH - 12 : arrH}:${arrM.toString().padStart(2,'0')} ${arrH >= 12 ? 'PM' : 'AM'}`;
+
+  // Check if arrived at final destination
+  const lastStep = navSteps[navSteps.length - 1];
+  const distToFinal = haversine(lat, lng, lastStep.endLat, lastStep.endLng);
+  if (distToFinal < ARRIVE_DISTANCE) {
+    finishNavigation();
+  }
+}
+
+function finishNavigation() {
+  speak('You have arrived at your destination.');
+  stopNavigation();
+}
+
+function announceStep(step, prefix) {
+  let text = step.instruction;
+
+  // Clean up Google's instruction text for speech
+  text = text.replace(/\//g, ' ');
+  text = text.replace(/\bRd\b/g, 'Road');
+  text = text.replace(/\bDr\b/g, 'Drive');
+  text = text.replace(/\bAve\b/g, 'Avenue');
+  text = text.replace(/\bBlvd\b/g, 'Boulevard');
+  text = text.replace(/\bSt\b/g, 'Street');
+  text = text.replace(/\bHwy\b/g, 'Highway');
+  text = text.replace(/\bFwy\b/g, 'Freeway');
+  text = text.replace(/\bL-/g, 'Loop ');
+  text = text.replace(/\bSR-/g, 'State Route ');
+
+  speak((prefix || '') + text);
+}
+
+function updateNavUI() {
+  if (!navActive || currentStepIdx >= navSteps.length) return;
+
+  const step = navSteps[currentStepIdx];
+  const nextStep = currentStepIdx + 1 < navSteps.length ? navSteps[currentStepIdx + 1] : null;
+  const afterStep = currentStepIdx + 2 < navSteps.length ? navSteps[currentStepIdx + 2] : null;
+
+  // Main HUD — show NEXT turn
+  const displayStep = nextStep || step;
+  const m = displayStep.maneuver;
+
+  // Arrow icon + color
+  const arrowEl = document.getElementById('hud-arrow');
+  if (m.includes('left')) { arrowEl.textContent = '↰'; arrowEl.style.background = 'var(--green)'; }
+  else if (m.includes('right') && !m.includes('uturn')) { arrowEl.textContent = '↱'; arrowEl.style.background = 'var(--cyan)'; }
+  else if (m === 'merge') { arrowEl.textContent = '⇢'; arrowEl.style.background = '#3b82f6'; }
+  else if (m.includes('ramp') || m.includes('fork')) { arrowEl.textContent = '⤵'; arrowEl.style.background = '#3b82f6'; }
+  else if (m.includes('uturn')) { arrowEl.textContent = '↩'; arrowEl.style.background = 'var(--amber)'; }
+  else { arrowEl.textContent = '↑'; arrowEl.style.background = 'var(--surface2)'; arrowEl.style.color = 'var(--text2)'; }
+  if (!m.includes('straight') && m !== '') arrowEl.style.color = 'var(--bg)';
+
+  // Street name
+  const streetText = displayStep.instruction.replace(/<[^>]*>/g, '');
+  document.getElementById('hud-street').textContent = streetText;
+
+  // After-next preview
+  const afterEl = document.getElementById('hud-after');
+  if (afterStep && afterStep.maneuver) {
+    afterEl.style.display = 'flex';
+    const am = afterStep.maneuver;
+    const afterIcon = document.getElementById('hud-after-icon');
+    if (am.includes('left')) { afterIcon.textContent = '↰'; afterIcon.style.background = 'var(--green-dim)'; afterIcon.style.color = 'var(--green)'; }
+    else if (am.includes('right')) { afterIcon.textContent = '↱'; afterIcon.style.background = 'var(--cyan-dim)'; afterIcon.style.color = 'var(--cyan)'; }
+    else if (am === 'merge') { afterIcon.textContent = '⇢'; afterIcon.style.background = 'var(--blue-dim)'; afterIcon.style.color = '#3b82f6'; }
+    else { afterIcon.textContent = '↑'; afterIcon.style.background = 'var(--surface2)'; afterIcon.style.color = 'var(--text2)'; }
+    document.getElementById('hud-after-text').textContent = 'Then: ' + afterStep.instruction.replace(/<[^>]*>/g, '');
+  } else {
+    afterEl.style.display = 'none';
+  }
+
+  // Highlight the next turn marker on the map
+  const nextIdx = currentStepIdx + 1;
+  turnMarkers.forEach(tm => {
+    if (tm.stepIdx === nextIdx) {
+      tm.marker.setAnimation(google.maps.Animation.BOUNCE);
+      tm.marker.setZIndex(200);
+      const icon = tm.marker.getIcon();
+      icon.scale = 13; icon.strokeWeight = 3;
+      tm.marker.setIcon(icon);
+    } else {
+      tm.marker.setAnimation(null);
+      tm.marker.setZIndex(50);
+      const icon = tm.marker.getIcon();
+      icon.scale = 9; icon.strokeWeight = 2;
+      tm.marker.setIcon(icon);
+    }
+  });
+}
+
+// ── Voice Engine ──
+function speak(text) {
+  if (navMuted || !window.speechSynthesis) return;
+
+  // Cancel any current speech
+  window.speechSynthesis.cancel();
+
+  const utter = new SpeechSynthesisUtterance(text);
+  utter.rate = 1.0;
+  utter.pitch = 1.0;
+  utter.volume = 1.0;
+
+  // Try to use a natural voice
+  const voices = window.speechSynthesis.getVoices();
+  const preferred = voices.find(v => v.name.includes('Samantha')) // iOS
+    || voices.find(v => v.name.includes('Google US English'))     // Android/Chrome
+    || voices.find(v => v.lang === 'en-US' && v.localService)
+    || voices.find(v => v.lang.startsWith('en'));
+  if (preferred) utter.voice = preferred;
+
+  window.speechSynthesis.speak(utter);
+}
+
+// Preload voices (needed on some browsers)
+if (window.speechSynthesis) {
+  window.speechSynthesis.getVoices();
+  window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
+}
+
+function toggleMute() {
+  navMuted = !navMuted;
+  const btn = document.getElementById('mute-btn');
+  btn.textContent = navMuted ? '🔇' : '🔊';
+  btn.style.color = navMuted ? 'var(--text2)' : 'var(--cyan)';
+  if (navMuted) window.speechSynthesis.cancel();
+}
+
+// ── Haversine distance (meters) ──
+function haversine(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = (d) => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function formatNavDist(meters) {
+  if (meters < 160) return `${Math.round(meters * 3.28084)} ft`;
+  const miles = meters * 0.000621371;
+  return `${miles.toFixed(1)} mi`;
+}
+
+function darkStyle() {
+  return [
+    { elementType:"geometry", stylers:[{color:"#0a0e17"}] },
+    { elementType:"labels.text.stroke", stylers:[{color:"#0a0e17"}] },
+    { elementType:"labels.text.fill", stylers:[{color:"#4a5568"}] },
+    { featureType:"road", elementType:"geometry", stylers:[{color:"#1a202c"}] },
+    { featureType:"road", elementType:"geometry.stroke", stylers:[{color:"#2d3748"}] },
+    { featureType:"road.highway", elementType:"geometry", stylers:[{color:"#1e293b"}] },
+    { featureType:"road.highway", elementType:"geometry.stroke", stylers:[{color:"#334155"}] },
+    { featureType:"water", elementType:"geometry", stylers:[{color:"#0c1220"}] },
+    { featureType:"poi", stylers:[{visibility:"off"}] },
+    { featureType:"transit", stylers:[{visibility:"off"}] },
+    { featureType:"poi.park", elementType:"geometry", stylers:[{color:"#0d1a12"}] },
+    { featureType:"administrative", elementType:"geometry.stroke", stylers:[{color:"#1e293b"}] },
+  ];
+}
+
+// ── GPS Location ──
+function useGPS() {
+  const btn = document.getElementById('gps-btn');
+  if (!navigator.geolocation) { showErr('GPS not supported on this device'); return; }
+  btn.textContent = '...';
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const latlng = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      fromP = { geometry: { location: new google.maps.LatLng(latlng.lat, latlng.lng) } };
+      document.getElementById('fi').value = '📍 My Location';
+      document.getElementById('fs').style.display = 'inline';
+      map.panTo(latlng);
+      map.setZoom(14);
+      btn.textContent = '📍';
+    },
+    (err) => {
+      showErr('Could not get location — make sure location access is enabled');
+      btn.textContent = '📍';
+    },
+    { enableHighAccuracy: true, timeout: 8000 }
+  );
+}
+
+boot();
+
+// ── PWA Service Worker ──
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+
+// ── Install Prompt ──
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  showInstallBanner();
+});
+
+function showInstallBanner() {
+  const banner = document.createElement('div');
+  banner.id = 'install-banner';
+  banner.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:9999;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 18px;box-shadow:0 16px 48px rgba(0,0,0,0.5);display:flex;align-items:center;gap:12px;max-width:320px;animation:su 0.3s ease-out';
+  banner.innerHTML = `
+    <div style="flex:1;min-width:0">
+      <div style="font-family:var(--font-d);font-size:13px;font-weight:700;color:var(--white)">Install Three Rights</div>
+      <div style="font-size:10px;color:var(--text2);margin-top:2px">Three rights make a left — on your home screen</div>
+    </div>
+    <button onclick="doInstall()" style="padding:8px 16px;background:var(--cyan);color:var(--bg);border:none;border-radius:6px;font-family:var(--font-d);font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">Install</button>
+    <button onclick="this.parentElement.remove()" style="background:none;border:none;color:var(--text2);font-size:16px;cursor:pointer;padding:4px">✕</button>
+  `;
+  document.body.appendChild(banner);
+}
+
+async function doInstall() {
+  if (!installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice;
+  installPrompt = null;
+  const b = document.getElementById('install-banner');
+  if (b) b.remove();
+}
+</script>
+</body>
+</html>

@@ -493,10 +493,13 @@ async function navigate() {
   hideErr();
 
   try {
+    const origin = fromP?.geometry ? fromP.geometry.location : fi;
+    const destination = toP?.geometry ? toP.geometry.location : ti;
+
+    // Step 1: Get initial routes from Google
     const result = await new Promise((res, rej) => {
       dirSvc.route({
-        origin: fromP?.geometry ? fromP.geometry.location : fi,
-        destination: toP?.geometry ? toP.geometry.location : ti,
+        origin, destination,
         travelMode: 'DRIVING',
         provideRouteAlternatives: true,
         drivingOptions: { departureTime: new Date(), trafficModel: 'bestguess' },
@@ -505,7 +508,7 @@ async function navigate() {
 
     btn.innerHTML = '<span class="ld">CHECKING TRAFFIC SIGNALS...</span>';
 
-    // Get route bounds for batch community arrow fetch
+    // Get route bounds for batch data fetch
     const bounds = { north: -90, south: 90, east: -180, west: 180 };
     result.routes.forEach(r => r.legs.forEach(leg => {
       leg.steps.forEach(step => {
@@ -517,29 +520,181 @@ async function navigate() {
       });
     }));
 
-    // Fetch ALL community arrows AND all OSM signals for the route area
-    // in parallel — two requests instead of N per left turn
+    // Fetch community arrows + OSM signals in parallel
     const [communityArrows, osmSignals] = await Promise.all([
       fetchCommunityArrows(bounds),
       batchFetchOSMSignals(bounds),
     ]);
 
-    // Analyze all routes with road-type inference first
+    // Step 2: Analyze all routes
     const analyzed = result.routes.map((r, i) => analyze(r, i));
-
-    // Then verify left turns against community DB + OSM
     for (const a of analyzed) {
       await verifyLeftTurns(a, result.routes[a.routeIndex], communityArrows, osmSignals);
     }
 
+    // Pick the best initial route
     analyzed.sort((a, b) => a.unprotectedLefts !== b.unprotectedLefts ? a.unprotectedLefts - b.unprotectedLefts : a.dur - b.dur);
-    display(result, analyzed[0]);
+    let bestAnalysis = analyzed[0];
+    let bestResult = result;
+
+    // Step 3: If unprotected lefts remain, reroute around them
+    if (bestAnalysis.unprotectedLefts > 0) {
+      btn.innerHTML = '<span class="ld">ELIMINATING LEFT TURNS...</span>';
+
+      const rerouted = await eliminateUnprotectedLefts(
+        origin, destination, bestResult, bestAnalysis, communityArrows, osmSignals
+      );
+      if (rerouted) {
+        bestResult = rerouted.result;
+        bestAnalysis = rerouted.analysis;
+      }
+    }
+
+    display(bestResult, bestAnalysis);
   } catch (e) {
     showErr(`Route failed: ${e}. Check addresses.`);
   }
 
   btn.disabled = false;
   btn.textContent = 'NAVIGATE — THREE RIGHTS';
+}
+
+// ── Eliminate unprotected lefts by adding waypoints that force right turns ──
+async function eliminateUnprotectedLefts(origin, destination, initialResult, initialAnalysis, communityArrows, osmSignals) {
+  const route = initialResult.routes[initialAnalysis.routeIndex];
+  const waypoints = [];
+
+  // Find all unprotected left turn locations
+  let stepIdx = 0;
+  route.legs.forEach(leg => {
+    leg.steps.forEach((step, i) => {
+      const analyzed = initialAnalysis.steps[stepIdx];
+      if (analyzed && analyzed.type === 'unprotected_left') {
+        // Get the turn point and the road we're currently on
+        const turnLat = step.start_location.lat();
+        const turnLng = step.start_location.lng();
+
+        // Calculate a point PAST the intersection (continue straight ~100m instead of turning left)
+        // Then Google will be forced to find a different path from that point
+        const nextStep = stepIdx + 1 < initialAnalysis.steps.length ? route.legs[0].steps[i + 1] : null;
+
+        // Use the step's end location as a "go past" waypoint
+        // This forces the route to continue straight through the intersection
+        // instead of turning left, then Google figures out the best way to get
+        // back on track (usually via right turns)
+        const endLat = step.end_location.lat();
+        const endLng = step.end_location.lng();
+
+        // Calculate a "go straight" waypoint by extending past the turn point
+        // in the direction we were already heading
+        const prevStep = stepIdx > 0 ? route.legs[0].steps[Math.max(0, i - 1)] : null;
+        if (prevStep) {
+          const headingLat = turnLat + (turnLat - prevStep.start_location.lat()) * 0.3;
+          const headingLng = turnLng + (turnLng - prevStep.start_location.lng()) * 0.3;
+          waypoints.push({
+            location: new google.maps.LatLng(headingLat, headingLng),
+            stopover: false,
+          });
+        }
+      }
+      stepIdx++;
+    });
+  });
+
+  if (waypoints.length === 0) return null;
+
+  // Limit to 8 waypoints (Google's max for free tier)
+  const limitedWaypoints = waypoints.slice(0, 8);
+
+  try {
+    // Re-request route with waypoints that bypass the unprotected lefts
+    const rerouted = await new Promise((res, rej) => {
+      dirSvc.route({
+        origin, destination,
+        waypoints: limitedWaypoints,
+        travelMode: 'DRIVING',
+        provideRouteAlternatives: true,
+        drivingOptions: { departureTime: new Date(), trafficModel: 'bestguess' },
+      }, (r, s) => s === 'OK' ? res(r) : rej(s));
+    });
+
+    // Analyze the rerouted options
+    const reAnalyzed = rerouted.routes.map((r, i) => analyze(r, i));
+    for (const a of reAnalyzed) {
+      await verifyLeftTurns(a, rerouted.routes[a.routeIndex], communityArrows, osmSignals);
+    }
+    reAnalyzed.sort((a, b) => a.unprotectedLefts !== b.unprotectedLefts ? a.unprotectedLefts - b.unprotectedLefts : a.dur - b.dur);
+
+    const best = reAnalyzed[0];
+
+    // Only use the rerouted version if it's actually better
+    if (best.unprotectedLefts < initialAnalysis.unprotectedLefts) {
+      return { result: rerouted, analysis: best };
+    }
+
+    // If rerouting didn't help, try a second pass with avoid waypoints
+    // placed slightly to the RIGHT of each unprotected left turn
+    const rightWaypoints = [];
+    stepIdx = 0;
+    route.legs.forEach(leg => {
+      leg.steps.forEach((step, i) => {
+        const analyzed = initialAnalysis.steps[stepIdx];
+        if (analyzed && analyzed.type === 'unprotected_left') {
+          const turnLat = step.start_location.lat();
+          const turnLng = step.start_location.lng();
+          const prevStep = stepIdx > 0 ? route.legs[0].steps[Math.max(0, i - 1)] : null;
+          if (prevStep) {
+            // Calculate a point to the RIGHT of the direction of travel
+            const dLat = turnLat - prevStep.start_location.lat();
+            const dLng = turnLng - prevStep.start_location.lng();
+            // Rotate 90 degrees right: (dLat, dLng) → (dLng, -dLat)
+            const rightLat = turnLat + dLng * 0.5;
+            const rightLng = turnLng - dLat * 0.5;
+            rightWaypoints.push({
+              location: new google.maps.LatLng(rightLat, rightLng),
+              stopover: false,
+            });
+          }
+        }
+        stepIdx++;
+      });
+    });
+
+    if (rightWaypoints.length > 0) {
+      try {
+        const rerouted2 = await new Promise((res, rej) => {
+          dirSvc.route({
+            origin, destination,
+            waypoints: rightWaypoints.slice(0, 8),
+            travelMode: 'DRIVING',
+            provideRouteAlternatives: true,
+            drivingOptions: { departureTime: new Date(), trafficModel: 'bestguess' },
+          }, (r, s) => s === 'OK' ? res(r) : rej(s));
+        });
+
+        const reAnalyzed2 = rerouted2.routes.map((r, i) => analyze(r, i));
+        for (const a of reAnalyzed2) {
+          await verifyLeftTurns(a, rerouted2.routes[a.routeIndex], communityArrows, osmSignals);
+        }
+        reAnalyzed2.sort((a, b) => a.unprotectedLefts !== b.unprotectedLefts ? a.unprotectedLefts - b.unprotectedLefts : a.dur - b.dur);
+
+        if (reAnalyzed2[0].unprotectedLefts < initialAnalysis.unprotectedLefts) {
+          return { result: rerouted2, analysis: reAnalyzed2[0] };
+        }
+      } catch {
+        // Second pass failed, return best from first pass
+      }
+    }
+
+    // If rerouting still didn't eliminate all lefts, use whichever is better
+    if (best.unprotectedLefts <= initialAnalysis.unprotectedLefts) {
+      return { result: rerouted, analysis: best };
+    }
+
+    return null; // Original route was already the best
+  } catch {
+    return null; // Rerouting failed, keep original
+  }
 }
 
 // ── Verify left turns against community DB, OSM cache, and local cache ──

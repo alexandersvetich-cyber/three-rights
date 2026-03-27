@@ -544,25 +544,9 @@ async function navigate() {
       await verifyLeftTurns(a, result.routes[a.routeIndex], communityArrows, osmSignals);
     }
 
-    // Pick the best initial route
+    // Pick the best route (fewest unprotected lefts)
     analyzed.sort((a, b) => a.unprotectedLefts !== b.unprotectedLefts ? a.unprotectedLefts - b.unprotectedLefts : a.dur - b.dur);
-    let bestAnalysis = analyzed[0];
-    let bestResult = result;
-
-    // Step 3: If unprotected lefts remain, reroute around them
-    if (bestAnalysis.unprotectedLefts > 0) {
-      btn.innerHTML = '<span class="ld">ELIMINATING LEFT TURNS...</span>';
-
-      const rerouted = await eliminateUnprotectedLefts(
-        origin, destination, bestResult, bestAnalysis, communityArrows, osmSignals
-      );
-      if (rerouted) {
-        bestResult = rerouted.result;
-        bestAnalysis = rerouted.analysis;
-      }
-    }
-
-    display(bestResult, bestAnalysis);
+    display(result, analyzed[0]);
   } catch (e) {
     showErr(`Route failed: ${e}. Check addresses.`);
   }
@@ -991,7 +975,7 @@ function display(response, a) {
     freeway: '#3b82f6',        // blue — on freeway
     fourway_left: '#22c55e',   // green — four-way stop (safe)
     confirmed_left: '#22c55e', // green — green arrow confirmed (OSM or user)
-    unprotected_left: '#ef4444', // red — ALL other lefts (BLOCKED)
+    unprotected_left: '#f59e0b', // amber — turn right instead
     straight: null,            // no marker for straight
   };
   const turnSymbols = {
@@ -1053,20 +1037,20 @@ function display(response, a) {
   const br = document.getElementById('br');
   br.innerHTML = '';
   if (a.unprotectedLefts === 0) br.innerHTML += bdg('✓ Zero unprotected lefts', '--green');
-  else br.innerHTML += bdg(`⚠ ${a.unprotectedLefts} left${a.unprotectedLefts>1?'s':''} blocked — three rights instead`, '--red');
+  else br.innerHTML += bdg(`↱ ${a.unprotectedLefts} left${a.unprotectedLefts>1?'s':''} → turn right instead`, '--amber');
   if ((a.confirmedLefts || 0) > 0) br.innerHTML += bdg(`🟢 ${a.confirmedLefts} green arrow${a.confirmedLefts>1?'s':''} verified`, '--green');
   if (a.fourWayLefts > 0) br.innerHTML += bdg(`🟢 ${a.fourWayLefts} four-way stop left${a.fourWayLefts>1?'s':''}`, '--green');
   if (a.usesFreeway) br.innerHTML += bdg('🛣 Freeway', '--cyan');
 
   const sl = document.getElementById('sl');
   sl.innerHTML = '';
-  const icons = { straight:'↑', right:'↱', merge:'⇢', exit:'⤵', freeway:'🛣', fourway_left:'↰', confirmed_left:'↰', unprotected_left:'⚠' };
+  const icons = { straight:'↑', right:'↱', merge:'⇢', exit:'⤵', freeway:'🛣', fourway_left:'↰', confirmed_left:'↰', unprotected_left:'↱' };
 
   a.steps.forEach((s, idx) => {
     const isPL = s.type==='fourway_left' || s.type==='confirmed_left', isUL = s.type==='unprotected_left';
     const isF = s.type==='freeway'||s.type==='merge'||s.type==='exit';
-    const bg = isUL?'var(--red-dim)':isPL?'var(--green-dim)':isF?'var(--cyan-dim)':'transparent';
-    const ib = isUL?'var(--red)':isPL?'var(--green)':isF?'var(--cyan)':'var(--surface2)';
+    const bg = isUL?'var(--amber-dim)':isPL?'var(--green-dim)':isF?'var(--cyan-dim)':'transparent';
+    const ib = isUL?'var(--amber)':isPL?'var(--green)':isF?'var(--cyan)':'var(--surface2)';
     const ic = (isUL||isPL||isF)?'var(--white)':'var(--text2)';
 
     const d = document.createElement('div');
@@ -1086,8 +1070,8 @@ function display(response, a) {
     d.innerHTML = `
       <div class="stp-i" style="background:${ib};color:${ic}">${icons[s.type]||'↑'}</div>
       <div style="flex:1;min-width:0">
-        <div class="stp-t" style="${isF?'color:var(--cyan);font-weight:600':''}">${s.instruction}</div>
-        ${s.safety?`<div class="stp-n" style="color:${isUL?'var(--red)':'var(--green)'}">${isUL?'⚠':'🟢'} ${s.safety.reason}</div>`:''}
+        <div class="stp-t" style="${isUL?'color:var(--amber);font-weight:600':isF?'color:var(--cyan);font-weight:600':''}">${isUL ? '↱ TURN RIGHT instead — ' + s.instruction.replace(/Turn left/i, 'skip left') : s.instruction}</div>
+        ${s.safety?`<div class="stp-n" style="color:${isUL?'var(--amber)':'var(--green)'}">${isUL?'↱':'🟢'} ${isUL ? 'Three rights make a left — turn right here' : s.safety.reason}</div>`:''}
         ${isF&&s.type==='merge'?'<div class="stp-n" style="color:var(--cyan)">Right-side merge — no left turns on freeways</div>':''}
         <div class="stp-d">${s.distance} · ${s.duration}</div>
         ${flagBtnHtml}${unflagBtnHtml}
@@ -1393,13 +1377,14 @@ function onPositionUpdate(pos) {
     if (distToTurn < ANNOUNCE_DISTANCE && lastSpokenIdx !== nextIdx) {
       const distText = distToTurn < 100 ? '' : `In ${Math.round(distToTurn / 50) * 50} meters, `;
 
-      // Check if this is an unprotected left — give safety warning
+      // Check if this is an unprotected left — tell driver to turn RIGHT instead
       if (nextStep.turnType === 'unprotected_left') {
-        const safetyNote = nextStep.safety?.reason || 'No green arrow confirmed';
-        speak(`${distText}Warning. Unprotected left turn ahead. ${safetyNote}. Consider making three right turns instead.`);
+        // Extract the street name from the instruction
+        const streetMatch = nextStep.instruction.match(/onto\s+(.+)/i);
+        const streetName = streetMatch ? streetMatch[1] : 'the next street';
+        speak(`${distText}Turn RIGHT onto ${streetName} instead of left. Then make two more right turns to continue your route.`);
       } else if (nextStep.turnType === 'fourway_left') {
         announceStep(nextStep, distText);
-        // Quick follow-up for context
         setTimeout(() => speak('Four way stop. Safe to turn left.'), 2500);
       } else if (nextStep.turnType === 'confirmed_left') {
         announceStep(nextStep, distText);
@@ -1414,7 +1399,7 @@ function onPositionUpdate(pos) {
     if (distToTurn < REANOUNCE_DISTANCE && lastSpokenIdx === nextIdx) {
       const m = nextStep.maneuver;
       if (nextStep.turnType === 'unprotected_left') {
-        speak('Unprotected left now. Make three rights if unsafe.');
+        speak('Turn RIGHT here. Three rights make a left.');
       } else if (m.includes('left')) {
         speak('Turn left now');
       } else if (m.includes('right')) {
@@ -1490,13 +1475,15 @@ function updateNavUI() {
   // Arrow icon + color — context-aware for left turn safety
   const arrowEl = document.getElementById('hud-arrow');
   if (m.includes('left')) {
-    arrowEl.textContent = '↰';
-    // Color based on safety classification
     if (displayStep.turnType === 'unprotected_left') {
-      arrowEl.style.background = 'var(--red)';
+      // Show RIGHT arrow instead — tell driver to go right
+      arrowEl.textContent = '↱';
+      arrowEl.style.background = 'var(--amber)';
     } else if (displayStep.turnType === 'confirmed_left' || displayStep.turnType === 'fourway_left') {
+      arrowEl.textContent = '↰';
       arrowEl.style.background = 'var(--green)';
     } else {
+      arrowEl.textContent = '↰';
       arrowEl.style.background = 'var(--green)';
     }
   }
@@ -1507,10 +1494,13 @@ function updateNavUI() {
   else { arrowEl.textContent = '↑'; arrowEl.style.background = 'var(--surface2)'; arrowEl.style.color = 'var(--text2)'; }
   if (!m.includes('straight') && m !== '') arrowEl.style.color = 'var(--bg)';
 
-  // Street name — add warning for unprotected lefts
+  // Street name — show RIGHT instruction for unprotected lefts
   const streetText = displayStep.instruction.replace(/<[^>]*>/g, '');
-  const warningPrefix = displayStep.turnType === 'unprotected_left' ? '⚠ ' : '';
-  document.getElementById('hud-street').textContent = warningPrefix + streetText;
+  if (displayStep.turnType === 'unprotected_left') {
+    document.getElementById('hud-street').textContent = '⚠ TURN RIGHT instead — three rights make a left';
+  } else {
+    document.getElementById('hud-street').textContent = streetText;
+  }
 
   // After-next preview
   const afterEl = document.getElementById('hud-after');

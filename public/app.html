@@ -234,6 +234,7 @@
           <div style="font-size:10px;color:var(--text2)">arrival</div>
         </div>
         <div style="display:flex;gap:8">
+          <button onclick="toggleOverview()" id="overview-btn" style="width:36px;height:36px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);color:var(--cyan);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center" title="Toggle overview">🗺</button>
           <button onclick="toggleMute()" id="mute-btn" style="width:36px;height:36px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);color:var(--cyan);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center" title="Toggle voice">🔊</button>
           <button onclick="toggleNavigation()" style="width:36px;height:36px;border-radius:8px;background:var(--red);border:none;color:var(--white);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-weight:700" title="Stop navigation">✕</button>
         </div>
@@ -1030,6 +1031,18 @@ function display(response, a) {
   const dp = document.getElementById('dp');
   dp.style.display = 'flex';
 
+  // ── FIT MAP TO SHOW FULL ROUTE OVERVIEW ──
+  const routeBounds = new google.maps.LatLngBounds();
+  r.legs.forEach(leg => {
+    leg.steps.forEach(step => {
+      routeBounds.extend(step.start_location);
+      routeBounds.extend(step.end_location);
+    });
+  });
+  map.fitBounds(routeBounds, { top: 80, bottom: 400, left: 20, right: 20 });
+  map.setTilt(0);
+  map.setHeading(0);
+
   document.getElementById('dm').innerHTML = `${a.distText} · <b>${a.durText}</b>`;
   document.getElementById('df').textContent = a.usesFreeway ? `🛣 Via ${a.fwyNames.join(' → ')}` : '';
   document.getElementById('dt').textContent = `Live traffic · ${a.unprotectedLefts === 0 ? 'zero' : a.unprotectedLefts} unprotected left${a.unprotectedLefts !== 1 ? 's' : ''}`;
@@ -1208,6 +1221,7 @@ function hideErr() { document.getElementById('eb').style.display = 'none'; }
 // ============================================================
 let navActive = false;
 let navMuted = false;
+let navOverview = false; // true = bird's eye view, false = driver view
 let watchId = null;
 let navSteps = [];       // decoded steps with lat/lng
 let currentStepIdx = 0;
@@ -1230,6 +1244,7 @@ function startNavigation() {
   if (!routeResponse || !routeAnalysis) return;
 
   navActive = true;
+  navOverview = false;
   currentStepIdx = 0;
   lastSpokenIdx = -1;
 
@@ -1343,12 +1358,14 @@ function onPositionUpdate(pos) {
     }
   }
 
-  // Keep map centered on user with heading rotation
-  map.panTo({ lat, lng });
-  if (map.getZoom() < 16) map.setZoom(17);
-  // Rotate map to heading (driving direction) if available
-  if (pos.coords.heading && pos.coords.heading > 0) {
-    map.setHeading(pos.coords.heading);
+  // Keep map centered on user with heading rotation (only in driver view)
+  if (!navOverview) {
+    map.panTo({ lat, lng });
+    if (map.getZoom() < 16) map.setZoom(17);
+    // Rotate map to heading (driving direction) if available
+    if (pos.coords.heading && pos.coords.heading > 0) {
+      map.setHeading(pos.coords.heading);
+    }
   }
 
   // Find distance to current step's end point
@@ -1571,6 +1588,47 @@ function toggleMute() {
   btn.textContent = navMuted ? '🔇' : '🔊';
   btn.style.color = navMuted ? 'var(--text2)' : 'var(--cyan)';
   if (navMuted) window.speechSynthesis.cancel();
+}
+
+function toggleOverview() {
+  navOverview = !navOverview;
+  const btn = document.getElementById('overview-btn');
+
+  if (navOverview) {
+    // Bird's eye view — show full route
+    btn.style.background = 'var(--cyan)';
+    btn.style.color = 'var(--bg)';
+    btn.style.borderColor = 'var(--cyan)';
+
+    // Zoom out to show full route
+    if (routeResponse && routeAnalysis) {
+      const route = routeResponse.routes[routeAnalysis.routeIndex];
+      const bounds = new google.maps.LatLngBounds();
+      route.legs.forEach(leg => {
+        leg.steps.forEach(step => {
+          bounds.extend(step.start_location);
+          bounds.extend(step.end_location);
+        });
+      });
+      map.fitBounds(bounds, 60);
+      map.setTilt(0);
+      map.setHeading(0);
+    }
+  } else {
+    // Driver view — zoom in, tilt, follow GPS
+    btn.style.background = 'var(--surface2)';
+    btn.style.color = 'var(--cyan)';
+    btn.style.borderColor = 'var(--border)';
+
+    map.setTilt(45);
+    map.setZoom(17);
+
+    // Snap back to current location
+    if (locationMarker) {
+      const pos = locationMarker.getPosition();
+      map.panTo(pos);
+    }
+  }
 }
 
 // ── Haversine distance (meters) ──

@@ -530,6 +530,16 @@ const observer = new IntersectionObserver((entries) => {
 }, { threshold: 0.15 });
 
 document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+
+// Kill service worker permanently — app needs internet anyway
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations().then(registrations => {
+    for (const reg of registrations) reg.unregister();
+  });
+}
+if (window.caches) {
+  caches.keys().then(keys => keys.forEach(key => caches.delete(key)));
+}
 </script>
 
 </body>

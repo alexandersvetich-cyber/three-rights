@@ -1679,9 +1679,14 @@ function useGPS() {
 
 boot();
 
-// ── PWA Service Worker ──
+// ── Kill service worker permanently — app needs internet anyway ──
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').catch(() => {});
+  navigator.serviceWorker.getRegistrations().then(registrations => {
+    for (const reg of registrations) reg.unregister();
+  });
+}
+if (window.caches) {
+  caches.keys().then(keys => keys.forEach(key => caches.delete(key)));
 }
 
 // ── Install Prompt ──

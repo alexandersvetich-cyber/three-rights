@@ -182,6 +182,15 @@
     <button onclick="manageFavorites()" id="manage-fav-btn" style="padding:6px 12px;background:var(--surface2);border:1px solid var(--border);color:var(--text2);border-radius:6px;font-family:var(--font-m);font-size:10px;cursor:pointer;display:none">✎ Edit</button>
   </div>
 
+  <!-- Recent Routes -->
+  <div id="recent-routes" style="display:none;margin-top:10px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <span style="font-size:10px;color:var(--text2);letter-spacing:0.06em">RECENT ROUTES</span>
+      <button onclick="clearRecentRoutes()" style="background:none;border:none;font-size:10px;color:var(--text2);cursor:pointer;font-family:var(--font-m)">Clear</button>
+    </div>
+    <div id="recent-list"></div>
+  </div>
+
   <button class="nav-btn" id="nb" onclick="navigate()">NAVIGATE — THREE RIGHTS</button>
   <div class="err" id="eb"></div>
   <div class="tip">Works anywhere in the <span>US</span> — real Google Maps with live traffic.<br>Three rights make a left — always.</div>
@@ -325,8 +334,9 @@ function initMap() {
     document.getElementById('ts').style.display = toP?.geometry ? 'inline' : 'none';
   });
 
-  // Load favorites and check for shared route
+  // Load favorites, recent routes, and check for shared route
   renderFavorites();
+  renderRecentRoutes();
   checkSharedRoute();
 }
 
@@ -526,6 +536,9 @@ async function navigate() {
   const fi = document.getElementById('fi').value.trim();
   const ti = document.getElementById('ti').value.trim();
   if (!fi || !ti) return showErr('Enter both a start and destination');
+
+  // Save to recent routes
+  saveRecentRoute(fi, ti);
 
   const btn = document.getElementById('nb');
   btn.disabled = true;
@@ -1913,6 +1926,84 @@ function manageFavorites() {
     localStorage.setItem('threeRights_favorites', JSON.stringify(favs));
     renderFavorites();
   }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// RECENT ROUTES — Quick re-navigate
+// ══════════════════════════════════════════════════════════════════
+const MAX_RECENT = 5;
+
+function getRecentRoutes() {
+  try { return JSON.parse(localStorage.getItem('threeRights_recent') || '[]'); }
+  catch { return []; }
+}
+
+function saveRecentRoute(from, to) {
+  if (!from || !to) return;
+  let recent = getRecentRoutes();
+  // Remove duplicate if exists
+  recent = recent.filter(r => !(r.from === from && r.to === to));
+  // Add to front
+  recent.unshift({ from, to, time: Date.now() });
+  // Keep only last 5
+  recent = recent.slice(0, MAX_RECENT);
+  localStorage.setItem('threeRights_recent', JSON.stringify(recent));
+}
+
+function renderRecentRoutes() {
+  const recent = getRecentRoutes();
+  const container = document.getElementById('recent-routes');
+  const list = document.getElementById('recent-list');
+
+  if (recent.length === 0) {
+    container.style.display = 'none';
+    return;
+  }
+
+  container.style.display = 'block';
+  list.innerHTML = '';
+
+  recent.forEach((r, i) => {
+    // Shorten addresses for display
+    const shortFrom = r.from.length > 30 ? r.from.substring(0, 28) + '...' : r.from;
+    const shortTo = r.to.length > 30 ? r.to.substring(0, 28) + '...' : r.to;
+
+    // Time ago
+    const mins = Math.round((Date.now() - r.time) / 60000);
+    let timeAgo = '';
+    if (mins < 60) timeAgo = `${mins}m ago`;
+    else if (mins < 1440) timeAgo = `${Math.round(mins / 60)}h ago`;
+    else timeAgo = `${Math.round(mins / 1440)}d ago`;
+
+    const div = document.createElement('div');
+    div.style.cssText = 'padding:8px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;margin-bottom:4px;cursor:pointer;transition:border-color 0.2s';
+    div.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:11px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">📍 ${shortFrom}</div>
+          <div style="font-size:11px;color:var(--cyan);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px">→ ${shortTo}</div>
+        </div>
+        <div style="font-size:9px;color:var(--text2);margin-left:8px;white-space:nowrap">${timeAgo}</div>
+      </div>`;
+
+    div.addEventListener('mouseenter', () => div.style.borderColor = 'rgba(6,214,160,0.3)');
+    div.addEventListener('mouseleave', () => div.style.borderColor = 'var(--border)');
+    div.addEventListener('click', () => {
+      document.getElementById('fi').value = r.from;
+      document.getElementById('ti').value = r.to;
+      document.getElementById('fs').style.display = 'inline';
+      document.getElementById('ts').style.display = 'inline';
+      fromP = null;
+      toP = null;
+    });
+
+    list.appendChild(div);
+  });
+}
+
+function clearRecentRoutes() {
+  localStorage.removeItem('threeRights_recent');
+  renderRecentRoutes();
 }
 
 // ══════════════════════════════════════════════════════════════════

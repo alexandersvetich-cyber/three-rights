@@ -192,8 +192,20 @@
       <button class="nb" onclick="clearRoute()">New Route</button>
     </div>
     <div class="bdg-row" id="br"></div>
-    <!-- Start/Stop Navigation -->
-    <button id="nav-go" onclick="toggleNavigation()" style="width:100%;margin-top:10px;padding:12px;background:var(--cyan);color:var(--bg);border:none;border-radius:8px;font-family:var(--font-d);font-size:14px;font-weight:700;cursor:pointer;letter-spacing:0.02em">
+    <!-- Route choice buttons -->
+    <div id="route-choice" style="display:none;margin-top:10px">
+      <div style="display:flex;gap:8">
+        <button id="btn-safe" onclick="chooseRoute('safe')" style="flex:1;padding:12px 8px;background:var(--cyan);color:var(--bg);border:none;border-radius:8px;font-family:var(--font-d);font-size:13px;font-weight:700;cursor:pointer;text-align:center;line-height:1.3">
+          ↱ SAFE ROUTE<br><span id="safe-eta" style="font-size:11px;font-weight:500;opacity:0.8">— min</span>
+        </button>
+        <button id="btn-fast" onclick="chooseRoute('fast')" style="flex:1;padding:12px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:8px;font-family:var(--font-d);font-size:13px;font-weight:700;cursor:pointer;text-align:center;line-height:1.3">
+          ⚡ FAST ROUTE<br><span id="fast-eta" style="font-size:11px;font-weight:500;opacity:0.8">— min</span>
+        </button>
+      </div>
+      <div id="route-diff" style="text-align:center;margin-top:6px;font-family:var(--font-m);font-size:10px;color:var(--text2)"></div>
+    </div>
+    <!-- Fallback single button when no unprotected lefts -->
+    <button id="nav-go" onclick="toggleNavigation()" style="display:none;width:100%;margin-top:10px;padding:12px;background:var(--cyan);color:var(--bg);border:none;border-radius:8px;font-family:var(--font-d);font-size:14px;font-weight:700;cursor:pointer;letter-spacing:0.02em">
       ▶ START NAVIGATION
     </button>
   </div>
@@ -1055,15 +1067,24 @@ function display(response, a) {
   document.getElementById('dm').innerHTML = `${a.distText} · <b>${a.durText}</b>`;
   document.getElementById('df').textContent = a.usesFreeway ? `🛣 Via ${a.fwyNames.join(' → ')}` : '';
 
-  // ETA comparison — show how much longer the safe route takes
-  let etaCompare = '';
-  if (a.etaDiffSeconds && a.etaDiffSeconds > 30) {
-    const diffMin = Math.round(a.etaDiffSeconds / 60);
-    etaCompare = ` · +${diffMin} min for safety`;
-  } else if (a.etaDiffSeconds !== undefined && a.etaDiffSeconds <= 30) {
-    etaCompare = ' · same as fastest route';
+  // Calculate three-rights ETA: Google's ETA + ~2 min per unprotected left
+  const MINUTES_PER_DETOUR = 2;
+  const googleMinutes = Math.round(a.dur / 60);
+  const safeMinutes = googleMinutes + (a.unprotectedLefts * MINUTES_PER_DETOUR);
+
+  document.getElementById('dt').textContent = `Live traffic · ${a.unprotectedLefts === 0 ? 'zero' : a.unprotectedLefts} unprotected left${a.unprotectedLefts !== 1 ? 's' : ''}`;
+
+  // Show route choice if there are unprotected lefts, otherwise just show Start Nav
+  if (a.unprotectedLefts > 0) {
+    document.getElementById('route-choice').style.display = 'block';
+    document.getElementById('nav-go').style.display = 'none';
+    document.getElementById('safe-eta').textContent = `~${safeMinutes} min · no unprotected lefts`;
+    document.getElementById('fast-eta').textContent = `${googleMinutes} min · ${a.unprotectedLefts} unprotected left${a.unprotectedLefts>1?'s':''}`;
+    document.getElementById('route-diff').textContent = `Safe route adds ~${a.unprotectedLefts * MINUTES_PER_DETOUR} min for ${a.unprotectedLefts} three-right detour${a.unprotectedLefts>1?'s':''}`;
+  } else {
+    document.getElementById('route-choice').style.display = 'none';
+    document.getElementById('nav-go').style.display = 'block';
   }
-  document.getElementById('dt').textContent = `Live traffic · ${a.unprotectedLefts === 0 ? 'zero' : a.unprotectedLefts} unprotected left${a.unprotectedLefts !== 1 ? 's' : ''}${etaCompare}`;
 
   const br = document.getElementById('br');
   br.innerHTML = '';
@@ -1230,6 +1251,7 @@ function hideErr() { document.getElementById('eb').style.display = 'none'; }
 let navActive = false;
 let navMuted = false;
 let navOverview = false; // true = bird's eye view, false = driver view
+let navMode = 'safe'; // 'safe' = three rights, 'fast' = Google's default with warnings
 let watchId = null;
 let navSteps = [];       // decoded steps with lat/lng
 let currentStepIdx = 0;
@@ -1241,6 +1263,33 @@ let routeAnalysis = null;
 const ANNOUNCE_DISTANCE = 150;  // ~500 feet — first announcement
 const ARRIVE_DISTANCE = 25;     // meters — advance to next step
 const REANOUNCE_DISTANCE = 30;  // ~100 feet — final announcement
+
+function chooseRoute(mode) {
+  navMode = mode;
+
+  // Update button styles
+  const safeBtn = document.getElementById('btn-safe');
+  const fastBtn = document.getElementById('btn-fast');
+
+  if (mode === 'safe') {
+    safeBtn.style.background = 'var(--cyan)';
+    safeBtn.style.color = 'var(--bg)';
+    safeBtn.style.border = 'none';
+    fastBtn.style.background = 'var(--surface2)';
+    fastBtn.style.color = 'var(--text)';
+    fastBtn.style.border = '1px solid var(--border)';
+  } else {
+    fastBtn.style.background = 'var(--amber)';
+    fastBtn.style.color = 'var(--bg)';
+    fastBtn.style.border = 'none';
+    safeBtn.style.background = 'var(--surface2)';
+    safeBtn.style.color = 'var(--text)';
+    safeBtn.style.border = '1px solid var(--border)';
+  }
+
+  // Start navigation with chosen mode
+  toggleNavigation();
+}
 
 function toggleNavigation() {
   if (navActive) stopNavigation();
@@ -1417,7 +1466,11 @@ function onPositionUpdate(pos) {
     // First announcement at ~500 feet
     if (distToTurn < ANNOUNCE_DISTANCE && lastSpokenIdx !== nextIdx) {
       if (nextStep.turnType === 'unprotected_left') {
-        speak(`${spokenDist}Turn right onto ${spokenStreet} instead of left. Three rights make a left.`);
+        if (navMode === 'safe') {
+          speak(`${spokenDist}Turn right onto ${spokenStreet} instead of left. Three rights make a left.`);
+        } else {
+          speak(`${spokenDist}Caution. Unprotected left onto ${spokenStreet}. No green arrow. Proceed carefully.`);
+        }
       } else if (nextStep.turnType === 'fourway_left') {
         speak(`${spokenDist}Turn left onto ${spokenStreet}. Four way stop, safe to turn.`);
       } else if (nextStep.turnType === 'confirmed_left') {
@@ -1431,7 +1484,11 @@ function onPositionUpdate(pos) {
     // Final announcement at ~100 feet — say it ONCE then lock it
     if (distToTurn < REANOUNCE_DISTANCE && lastSpokenIdx === nextIdx) {
       if (nextStep.turnType === 'unprotected_left') {
-        speak(`Turn right now onto ${spokenStreet}.`);
+        if (navMode === 'safe') {
+          speak(`Turn right now onto ${spokenStreet}.`);
+        } else {
+          speak(`Turn left now. Be careful.`);
+        }
       } else if (nextStep.maneuver.includes('left')) {
         speak('Turn left now.');
       } else if (nextStep.maneuver.includes('right')) {
@@ -1504,13 +1561,19 @@ function updateNavUI() {
   const displayStep = nextStep || step;
   const m = displayStep.maneuver;
 
-  // Arrow icon + color — context-aware for left turn safety
+  // Arrow icon + color — context-aware for left turn safety and route mode
   const arrowEl = document.getElementById('hud-arrow');
   if (m.includes('left')) {
     if (displayStep.turnType === 'unprotected_left') {
-      // Show RIGHT arrow instead — tell driver to go right
-      arrowEl.textContent = '↱';
-      arrowEl.style.background = 'var(--amber)';
+      if (navMode === 'safe') {
+        // Safe mode: show RIGHT arrow
+        arrowEl.textContent = '↱';
+        arrowEl.style.background = 'var(--amber)';
+      } else {
+        // Fast mode: show LEFT arrow with caution color
+        arrowEl.textContent = '↰';
+        arrowEl.style.background = 'var(--red)';
+      }
     } else if (displayStep.turnType === 'confirmed_left' || displayStep.turnType === 'fourway_left') {
       arrowEl.textContent = '↰';
       arrowEl.style.background = 'var(--green)';
@@ -1526,10 +1589,14 @@ function updateNavUI() {
   else { arrowEl.textContent = '↑'; arrowEl.style.background = 'var(--surface2)'; arrowEl.style.color = 'var(--text2)'; }
   if (!m.includes('straight') && m !== '') arrowEl.style.color = 'var(--bg)';
 
-  // Street name — show RIGHT instruction for unprotected lefts
+  // Street name — show instruction based on mode
   const streetText = displayStep.instruction.replace(/<[^>]*>/g, '');
   if (displayStep.turnType === 'unprotected_left') {
-    document.getElementById('hud-street').textContent = '⚠ TURN RIGHT instead — three rights make a left';
+    if (navMode === 'safe') {
+      document.getElementById('hud-street').textContent = '⚠ TURN RIGHT instead — three rights make a left';
+    } else {
+      document.getElementById('hud-street').textContent = '⚠ CAUTION — unprotected left · ' + streetText;
+    }
   } else {
     document.getElementById('hud-street').textContent = streetText;
   }

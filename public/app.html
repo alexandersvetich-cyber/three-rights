@@ -1568,8 +1568,8 @@ function startNavigation() {
   updateNavUI();
 
   // Load nearby incidents
-  const route = routeResponse.routes[routeAnalysis.routeIndex];
-  const midLeg = route.legs[0];
+  const incRoute = routeResponse.routes[routeAnalysis.routeIndex];
+  const midLeg = incRoute.legs[0];
   const midLat = (midLeg.start_location.lat() + midLeg.end_location.lat()) / 2;
   const midLng = (midLeg.start_location.lng() + midLeg.end_location.lng()) / 2;
   loadNearbyIncidents(midLat, midLng);

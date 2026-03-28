@@ -1791,26 +1791,68 @@ function lightStyle() {
   ];
 }
 
-let isLightMode = localStorage.getItem('threeRights_theme') === 'light';
+let themePreference = localStorage.getItem('threeRights_theme') || 'auto'; // 'auto', 'light', 'dark'
+let isLightMode = false;
+
+function getAutoTheme() {
+  const hour = new Date().getHours();
+  // Light mode from 6 AM to 7 PM, dark mode otherwise
+  return hour >= 6 && hour < 19;
+}
 
 function toggleTheme() {
-  isLightMode = !isLightMode;
+  // Cycle: auto → light → dark → auto
+  if (themePreference === 'auto') {
+    themePreference = 'light';
+    isLightMode = true;
+  } else if (themePreference === 'light') {
+    themePreference = 'dark';
+    isLightMode = false;
+  } else {
+    themePreference = 'auto';
+    isLightMode = getAutoTheme();
+  }
+  localStorage.setItem('threeRights_theme', themePreference);
   applyTheme();
-  localStorage.setItem('threeRights_theme', isLightMode ? 'light' : 'dark');
 }
 
 function applyTheme() {
   document.body.classList.toggle('light-mode', isLightMode);
-  document.getElementById('theme-toggle').textContent = isLightMode ? '☀️' : '🌙';
+  const btn = document.getElementById('theme-toggle');
+  if (themePreference === 'auto') {
+    btn.textContent = isLightMode ? '☀️' : '🌙';
+    btn.title = 'Auto mode (switches at sunrise/sunset) — tap to override';
+  } else if (themePreference === 'light') {
+    btn.textContent = '☀️';
+    btn.title = 'Light mode — tap for dark';
+  } else {
+    btn.textContent = '🌙';
+    btn.title = 'Dark mode — tap for auto';
+  }
   if (map) {
     map.setOptions({ styles: isLightMode ? lightStyle() : darkStyle() });
   }
-  // Update theme-color meta for mobile browser bar
   document.querySelector('meta[name="theme-color"]').setAttribute('content', isLightMode ? '#f5f7fa' : '#07090f');
 }
 
-// Apply saved theme on load
+// Set initial theme
+if (themePreference === 'auto') {
+  isLightMode = getAutoTheme();
+} else {
+  isLightMode = themePreference === 'light';
+}
 if (isLightMode) document.body.classList.add('light-mode');
+
+// Auto-switch check every minute (for auto mode)
+setInterval(() => {
+  if (themePreference === 'auto') {
+    const shouldBeLight = getAutoTheme();
+    if (shouldBeLight !== isLightMode) {
+      isLightMode = shouldBeLight;
+      applyTheme();
+    }
+  }
+}, 60000);
 
 // ── GPS Location ──
 function useGPS() {

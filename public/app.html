@@ -1230,9 +1230,9 @@ let lastSpokenIdx = -1;
 let routeResponse = null;
 let routeAnalysis = null;
 
-const ANNOUNCE_DISTANCE = 200;  // meters — announce when this close to next turn
-const ARRIVE_DISTANCE = 30;     // meters — advance to next step
-const REANOUNCE_DISTANCE = 50;  // meters — re-announce when very close
+const ANNOUNCE_DISTANCE = 150;  // ~500 feet — first announcement
+const ARRIVE_DISTANCE = 25;     // meters — advance to next step
+const REANOUNCE_DISTANCE = 30;  // ~100 feet — final announcement
 
 function toggleNavigation() {
   if (navActive) stopNavigation();
@@ -1390,41 +1390,48 @@ function onPositionUpdate(pos) {
     // Update HUD distance countdown
     document.getElementById('hud-dist').textContent = formatNavDist(distToTurn);
 
-    // Announce upcoming turn
-    if (distToTurn < ANNOUNCE_DISTANCE && lastSpokenIdx !== nextIdx) {
-      const distText = distToTurn < 100 ? '' : `In ${Math.round(distToTurn / 50) * 50} meters, `;
+    // Extract street name for voice (used in multiple announcements)
+    const streetMatch = nextStep.instruction.match(/onto\s+(.+)/i);
+    const streetName = streetMatch ? streetMatch[1] : '';
+    // Clean up abbreviations for speech
+    const spokenStreet = streetName
+      .replace(/\bRd\b/g, 'Road').replace(/\bDr\b/g, 'Drive')
+      .replace(/\bAve\b/g, 'Avenue').replace(/\bBlvd\b/g, 'Boulevard')
+      .replace(/\bSt\b/g, 'Street').replace(/\bHwy\b/g, 'Highway')
+      .replace(/\bLn\b/g, 'Lane').replace(/\bCt\b/g, 'Court')
+      .replace(/\bPl\b/g, 'Place').replace(/\bCir\b/g, 'Circle')
+      .replace(/\//g, ' ');
 
-      // Check if this is an unprotected left — tell driver to turn RIGHT instead
+    // Convert meters to feet for spoken distance
+    const distFeet = Math.round(distToTurn * 3.28084);
+    const spokenDist = distFeet > 200 ? `In ${Math.round(distFeet / 100) * 100} feet, ` : '';
+
+    // First announcement at ~500 feet
+    if (distToTurn < ANNOUNCE_DISTANCE && lastSpokenIdx !== nextIdx) {
       if (nextStep.turnType === 'unprotected_left') {
-        // Extract the street name from the instruction
-        const streetMatch = nextStep.instruction.match(/onto\s+(.+)/i);
-        const streetName = streetMatch ? streetMatch[1] : 'the next street';
-        speak(`${distText}Turn RIGHT onto ${streetName} instead of left. Then make two more right turns to continue your route.`);
+        speak(`${spokenDist}Turn right onto ${spokenStreet} instead of left. Three rights make a left.`);
       } else if (nextStep.turnType === 'fourway_left') {
-        announceStep(nextStep, distText);
-        setTimeout(() => speak('Four way stop. Safe to turn left.'), 2500);
+        speak(`${spokenDist}Turn left onto ${spokenStreet}. Four way stop, safe to turn.`);
       } else if (nextStep.turnType === 'confirmed_left') {
-        announceStep(nextStep, distText);
-        setTimeout(() => speak('Green arrow verified. Protected left turn.'), 2500);
+        speak(`${spokenDist}Turn left onto ${spokenStreet}. Green arrow, protected turn.`);
       } else {
-        announceStep(nextStep, distText);
+        announceStep(nextStep, spokenDist);
       }
       lastSpokenIdx = nextIdx;
     }
 
-    // Re-announce when very close
+    // Final announcement at ~100 feet — say it ONCE then lock it
     if (distToTurn < REANOUNCE_DISTANCE && lastSpokenIdx === nextIdx) {
-      const m = nextStep.maneuver;
       if (nextStep.turnType === 'unprotected_left') {
-        speak('Turn RIGHT here. Three rights make a left.');
-      } else if (m.includes('left')) {
-        speak('Turn left now');
-      } else if (m.includes('right')) {
-        speak('Turn right now');
-      } else if (m === 'merge') {
-        speak('Merge now');
+        speak(`Turn right now onto ${spokenStreet}.`);
+      } else if (nextStep.maneuver.includes('left')) {
+        speak('Turn left now.');
+      } else if (nextStep.maneuver.includes('right')) {
+        speak('Turn right now.');
+      } else if (nextStep.maneuver === 'merge') {
+        speak('Merge now.');
       }
-      lastSpokenIdx = nextIdx + 0.5; // prevent re-re-announce
+      lastSpokenIdx = nextIdx + 0.5; // lock — never announce this turn again
     }
   } else {
     // On last step — show distance to destination

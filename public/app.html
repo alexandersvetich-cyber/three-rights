@@ -174,6 +174,14 @@
     <div class="f-label"><div class="f-dot to"></div><span class="f-name">TO</span><span id="ts" style="font-size:9px;color:var(--green);margin-left:auto;display:none">✓</span></div>
     <input class="si" id="ti" placeholder="Address, business, or place" autocomplete="off">
   </div>
+
+  <!-- Favorites -->
+  <div id="favorites-bar" style="display:flex;gap:6;flex-wrap:wrap;margin-top:10px"></div>
+  <div style="display:flex;gap:6;margin-top:6px">
+    <button onclick="saveFavorite()" style="padding:6px 12px;background:var(--surface2);border:1px solid var(--border);color:var(--text2);border-radius:6px;font-family:var(--font-m);font-size:10px;cursor:pointer;flex:1">+ Save Favorite</button>
+    <button onclick="manageFavorites()" id="manage-fav-btn" style="padding:6px 12px;background:var(--surface2);border:1px solid var(--border);color:var(--text2);border-radius:6px;font-family:var(--font-m);font-size:10px;cursor:pointer;display:none">✎ Edit</button>
+  </div>
+
   <button class="nav-btn" id="nb" onclick="navigate()">NAVIGATE — THREE RIGHTS</button>
   <div class="err" id="eb"></div>
   <div class="tip">Works anywhere in the <span>US</span> — real Google Maps with live traffic.<br>Three rights make a left — always.</div>
@@ -189,7 +197,10 @@
         <div class="dp-fwy" id="df"></div>
         <div class="dp-traf" id="dt"></div>
       </div>
-      <button class="nb" onclick="clearRoute()">New Route</button>
+      <div style="display:flex;gap:6">
+        <button class="nb" onclick="shareRoute()">📤 Share</button>
+        <button class="nb" onclick="clearRoute()">New Route</button>
+      </div>
     </div>
     <div class="bdg-row" id="br"></div>
     <!-- Route choice buttons -->
@@ -313,6 +324,10 @@ function initMap() {
     toP = toAC.getPlace();
     document.getElementById('ts').style.display = toP?.geometry ? 'inline' : 'none';
   });
+
+  // Load favorites and check for shared route
+  renderFavorites();
+  checkSharedRoute();
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1805,6 +1820,142 @@ function useGPS() {
     },
     { enableHighAccuracy: true, timeout: 8000 }
   );
+}
+
+// ══════════════════════════════════════════════════════════════════
+// FAVORITES — Save frequent destinations
+// ══════════════════════════════════════════════════════════════════
+function getFavorites() {
+  try { return JSON.parse(localStorage.getItem('threeRights_favorites') || '[]'); }
+  catch { return []; }
+}
+
+function renderFavorites() {
+  const favs = getFavorites();
+  const bar = document.getElementById('favorites-bar');
+  const manageBtn = document.getElementById('manage-fav-btn');
+  bar.innerHTML = '';
+
+  if (favs.length === 0) {
+    bar.style.display = 'none';
+    manageBtn.style.display = 'none';
+    return;
+  }
+
+  bar.style.display = 'flex';
+  manageBtn.style.display = 'block';
+
+  const icons = { '🏠': 'Home', '💼': 'Work', '💪': 'Gym', '⭐': '' };
+
+  favs.forEach((fav, i) => {
+    const btn = document.createElement('button');
+    btn.style.cssText = 'padding:6px 12px;background:var(--surface2);border:1px solid var(--border);color:var(--cyan);border-radius:16px;font-family:var(--font-m);font-size:11px;cursor:pointer;white-space:nowrap';
+    btn.textContent = `${fav.icon} ${fav.name}`;
+    btn.addEventListener('click', () => {
+      document.getElementById('ti').value = fav.address;
+      toP = null; // let autocomplete or navigate handle it
+      document.getElementById('ts').style.display = 'inline';
+    });
+    bar.appendChild(btn);
+  });
+}
+
+function saveFavorite() {
+  const dest = document.getElementById('ti').value.trim();
+  if (!dest) {
+    showErr('Enter a destination first, then save it as a favorite');
+    return;
+  }
+
+  const icons = ['🏠', '💼', '💪', '⭐'];
+  const labels = ['Home', 'Work', 'Gym', 'Other'];
+  const favs = getFavorites();
+
+  // Simple prompt — pick icon
+  const name = prompt('Name this favorite (e.g. Home, Work, Gym):');
+  if (!name) return;
+
+  let icon = '⭐';
+  const nameLower = name.toLowerCase();
+  if (nameLower.includes('home')) icon = '🏠';
+  else if (nameLower.includes('work') || nameLower.includes('office')) icon = '💼';
+  else if (nameLower.includes('gym') || nameLower.includes('f45') || nameLower.includes('fitness')) icon = '💪';
+  else if (nameLower.includes('school')) icon = '🎓';
+  else if (nameLower.includes('store') || nameLower.includes('shop')) icon = '🛒';
+  else if (nameLower.includes('church') || nameLower.includes('temple')) icon = '⛪';
+  else if (nameLower.includes('park')) icon = '🌳';
+  else if (nameLower.includes('coffee')) icon = '☕';
+  else if (nameLower.includes('bar') || nameLower.includes('pub')) icon = '🍺';
+  else if (nameLower.includes('restaurant') || nameLower.includes('food')) icon = '🍽';
+
+  // Check for duplicate
+  if (favs.some(f => f.address === dest)) {
+    showErr('This destination is already saved');
+    return;
+  }
+
+  favs.push({ name, icon, address: dest });
+  localStorage.setItem('threeRights_favorites', JSON.stringify(favs));
+  renderFavorites();
+}
+
+function manageFavorites() {
+  const favs = getFavorites();
+  if (favs.length === 0) return;
+
+  const list = favs.map((f, i) => `${i + 1}. ${f.icon} ${f.name} — ${f.address}`).join('\n');
+  const toDelete = prompt(`Your favorites:\n${list}\n\nEnter number to delete (or cancel):`);
+  if (!toDelete) return;
+
+  const idx = parseInt(toDelete) - 1;
+  if (idx >= 0 && idx < favs.length) {
+    favs.splice(idx, 1);
+    localStorage.setItem('threeRights_favorites', JSON.stringify(favs));
+    renderFavorites();
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// SHARE ROUTE — Send via text or copy link
+// ══════════════════════════════════════════════════════════════════
+function shareRoute() {
+  const from = document.getElementById('fi').value.trim();
+  const to = document.getElementById('ti').value.trim();
+  if (!from || !to) return;
+
+  // Build a shareable URL with origin and destination as query params
+  const url = `${window.location.origin}/app.html?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  const text = `🚗 Check out this safe route on Three Rights!\n\nFrom: ${from}\nTo: ${to}\n\nThree rights make a left — no unprotected left turns.\n${url}`;
+
+  // Use native share if available (mobile)
+  if (navigator.share) {
+    navigator.share({
+      title: 'Three Rights Route',
+      text: text,
+      url: url,
+    }).catch(() => {});
+  } else {
+    // Fallback: copy to clipboard
+    navigator.clipboard.writeText(text).then(() => {
+      alert('Route link copied to clipboard!');
+    }).catch(() => {
+      prompt('Copy this link:', url);
+    });
+  }
+}
+
+// ── Check for shared route on page load ──
+function checkSharedRoute() {
+  const params = new URLSearchParams(window.location.search);
+  const from = params.get('from');
+  const to = params.get('to');
+  if (from && to) {
+    // Pre-fill the inputs
+    document.getElementById('fi').value = from;
+    document.getElementById('ti').value = to;
+    document.getElementById('fs').style.display = 'inline';
+    document.getElementById('ts').style.display = 'inline';
+  }
 }
 
 boot();

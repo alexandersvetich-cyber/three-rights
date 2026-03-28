@@ -545,9 +545,18 @@ async function navigate() {
       await verifyLeftTurns(a, result.routes[a.routeIndex], communityArrows, osmSignals);
     }
 
-    // Pick the best route (fewest unprotected lefts)
+    // Find the FASTEST route (by duration, regardless of lefts)
+    const fastest = [...analyzed].sort((a, b) => a.dur - b.dur)[0];
+
+    // Pick the SAFEST route (fewest unprotected lefts, then fastest)
     analyzed.sort((a, b) => a.unprotectedLefts !== b.unprotectedLefts ? a.unprotectedLefts - b.unprotectedLefts : a.dur - b.dur);
-    display(result, analyzed[0]);
+    const safest = analyzed[0];
+
+    // Calculate time difference
+    safest.etaDiffSeconds = safest.dur - fastest.dur;
+    safest.fastestDurText = fastest.durText;
+
+    display(result, safest);
   } catch (e) {
     showErr(`Route failed: ${e}. Check addresses.`);
   }
@@ -1045,7 +1054,16 @@ function display(response, a) {
 
   document.getElementById('dm').innerHTML = `${a.distText} · <b>${a.durText}</b>`;
   document.getElementById('df').textContent = a.usesFreeway ? `🛣 Via ${a.fwyNames.join(' → ')}` : '';
-  document.getElementById('dt').textContent = `Live traffic · ${a.unprotectedLefts === 0 ? 'zero' : a.unprotectedLefts} unprotected left${a.unprotectedLefts !== 1 ? 's' : ''}`;
+
+  // ETA comparison — show how much longer the safe route takes
+  let etaCompare = '';
+  if (a.etaDiffSeconds && a.etaDiffSeconds > 30) {
+    const diffMin = Math.round(a.etaDiffSeconds / 60);
+    etaCompare = ` · +${diffMin} min for safety`;
+  } else if (a.etaDiffSeconds !== undefined && a.etaDiffSeconds <= 30) {
+    etaCompare = ' · same as fastest route';
+  }
+  document.getElementById('dt').textContent = `Live traffic · ${a.unprotectedLefts === 0 ? 'zero' : a.unprotectedLefts} unprotected left${a.unprotectedLefts !== 1 ? 's' : ''}${etaCompare}`;
 
   const br = document.getElementById('br');
   br.innerHTML = '';
@@ -1066,18 +1084,23 @@ function display(response, a) {
     const ib = isUL?'var(--amber)':isPL?'var(--green)':isF?'var(--cyan)':'var(--surface2)';
     const ic = (isUL||isPL||isF)?'var(--white)':'var(--text2)';
 
+    // Get lat/lng for this step from turnMarkers
+    const tm = turnMarkers.find(t => t.stepIdx === idx);
+    const stepLat = tm ? tm.lat : 0;
+    const stepLng = tm ? tm.lng : 0;
+
     const d = document.createElement('div');
     d.className = 'stp'; d.style.background = bg; d.style.cursor = 'pointer';
 
     // Build flag button HTML for unprotected lefts — but NOT for confirmed stop signs
     const isStopSign = s.safety?.reason?.toLowerCase().includes('stop sign');
-    const flagBtnHtml = (isUL && !isStopSign) ? `<button class="flag-arrow-btn" data-idx="${idx}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--cyan);cursor:pointer;white-space:nowrap">🟢 I know this has a green arrow</button>` : '';
-    // Build unflag button — show for community verified lefts AND unverified reports
+    const flagBtnHtml = (isUL && !isStopSign && stepLat) ? `<button class="flag-arrow-btn" data-lat="${stepLat}" data-lng="${stepLng}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--cyan);cursor:pointer;white-space:nowrap">🟢 I know this has a green arrow</button>` : '';
+    // Build unflag button
     const hasUnverifiedReport = s.safety?.reason?.includes('reported green arrow');
-    const unflagBtnHtml = (s.type === 'confirmed_left' && (s.safety?.type === 'community_verified'))
-      ? `<button class="unflag-arrow-btn" data-idx="${idx}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--red);cursor:pointer;white-space:nowrap">✕ Remove my confirmation</button>`
-      : hasUnverifiedReport
-        ? `<button class="unflag-arrow-btn" data-idx="${idx}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--red);cursor:pointer;white-space:nowrap">✕ Remove my flag</button>`
+    const unflagBtnHtml = (s.type === 'confirmed_left' && (s.safety?.type === 'community_verified') && stepLat)
+      ? `<button class="unflag-arrow-btn" data-lat="${stepLat}" data-lng="${stepLng}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--red);cursor:pointer;white-space:nowrap">✕ Remove my confirmation</button>`
+      : (hasUnverifiedReport && stepLat)
+        ? `<button class="unflag-arrow-btn" data-lat="${stepLat}" data-lng="${stepLng}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--red);cursor:pointer;white-space:nowrap">✕ Remove my flag</button>`
         : '';
 
     d.innerHTML = `
@@ -1090,13 +1113,13 @@ function display(response, a) {
         ${flagBtnHtml}${unflagBtnHtml}
       </div>`;
 
-    // Click step → pan map to that turn
-    d.addEventListener('click', () => {
+    // Click step → pan map to that turn (but not when clicking buttons)
+    d.addEventListener('click', (e) => {
+      if (e.target.closest('.flag-arrow-btn') || e.target.closest('.unflag-arrow-btn')) return;
       const tm = turnMarkers.find(t => t.stepIdx === idx);
       if (tm) {
         map.panTo({ lat: tm.lat, lng: tm.lng });
         map.setZoom(17);
-        // Bounce the marker
         tm.marker.setAnimation(google.maps.Animation.BOUNCE);
         setTimeout(() => tm.marker.setAnimation(null), 1500);
       }
@@ -1109,86 +1132,71 @@ function display(response, a) {
   sl.querySelectorAll('.flag-arrow-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const stepIdx = parseInt(btn.dataset.idx);
-      const tm = turnMarkers.find(t => t.stepIdx === stepIdx);
-      if (tm) {
-        btn.textContent = '...saving';
-        btn.disabled = true;
-        flagGreenArrow(tm.lat, tm.lng).then(count => {
-          btn.textContent = `✓ Flagged (${count}/${COMMUNITY_THRESHOLD})`;
-          btn.style.color = 'var(--green)';
-          btn.style.borderColor = 'var(--green)';
-          // Re-run display after short delay
-          setTimeout(() => {
-            if (routeResponse && routeAnalysis) {
-              const reAnalyzed = routeResponse.routes.map((r, i) => analyze(r, i));
-              (async () => {
-                const bounds = { north: -90, south: 90, east: -180, west: 180 };
-                routeResponse.routes.forEach(r => r.legs.forEach(leg => {
-                  leg.steps.forEach(step => {
-                    const lat = step.start_location.lat(), lng = step.start_location.lng();
-                    if (lat > bounds.north) bounds.north = lat;
-                    if (lat < bounds.south) bounds.south = lat;
-                    if (lng > bounds.east) bounds.east = lng;
-                    if (lng < bounds.west) bounds.west = lng;
-                  });
-                }));
-                const [arrows, osm] = await Promise.all([
-                  fetchCommunityArrows(bounds),
-                  batchFetchOSMSignals(bounds),
-                ]);
-                for (const ra of reAnalyzed) {
-                  await verifyLeftTurns(ra, routeResponse.routes[ra.routeIndex], arrows, osm);
-                }
-                reAnalyzed.sort((a, b) => a.unprotectedLefts !== b.unprotectedLefts ? a.unprotectedLefts - b.unprotectedLefts : a.dur - b.dur);
-                display(routeResponse, reAnalyzed[0]);
-              })();
-            }
-          }, 500);
-        }).catch(() => {
-          btn.textContent = '✕ Failed — try again';
-          btn.disabled = false;
-        });
-      }
+      e.preventDefault();
+      const lat = parseFloat(btn.dataset.lat);
+      const lng = parseFloat(btn.dataset.lng);
+      if (!lat || !lng) return;
+
+      btn.textContent = '...saving';
+      btn.disabled = true;
+      flagGreenArrow(lat, lng).then(count => {
+        btn.textContent = `✓ Flagged (${count}/${COMMUNITY_THRESHOLD})`;
+        btn.style.color = 'var(--green)';
+        btn.style.borderColor = 'var(--green)';
+        // Refresh route display after a moment
+        setTimeout(() => refreshRoute(), 500);
+      }).catch(() => {
+        btn.textContent = '✕ Failed — try again';
+        btn.disabled = false;
+      });
     });
   });
+
   sl.querySelectorAll('.unflag-arrow-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const stepIdx = parseInt(btn.dataset.idx);
-      const tm = turnMarkers.find(t => t.stepIdx === stepIdx);
-      if (tm) {
-        btn.textContent = '...removing';
-        btn.disabled = true;
-        unflagGreenArrow(tm.lat, tm.lng).then(() => {
-          if (routeResponse && routeAnalysis) {
-            const reAnalyzed = routeResponse.routes.map((r, i) => analyze(r, i));
-            (async () => {
-              const bounds = { north: -90, south: 90, east: -180, west: 180 };
-              routeResponse.routes.forEach(r => r.legs.forEach(leg => {
-                leg.steps.forEach(step => {
-                  const lat = step.start_location.lat(), lng = step.start_location.lng();
-                  if (lat > bounds.north) bounds.north = lat;
-                  if (lat < bounds.south) bounds.south = lat;
-                  if (lng > bounds.east) bounds.east = lng;
-                  if (lng < bounds.west) bounds.west = lng;
-                });
-              }));
-              const [arrows, osm] = await Promise.all([
-                fetchCommunityArrows(bounds),
-                batchFetchOSMSignals(bounds),
-              ]);
-              for (const ra of reAnalyzed) {
-                await verifyLeftTurns(ra, routeResponse.routes[ra.routeIndex], arrows, osm);
-              }
-              reAnalyzed.sort((a, b) => a.unprotectedLefts !== b.unprotectedLefts ? a.unprotectedLefts - b.unprotectedLefts : a.dur - b.dur);
-              display(routeResponse, reAnalyzed[0]);
-            })();
-          }
-        });
-      }
+      e.preventDefault();
+      const lat = parseFloat(btn.dataset.lat);
+      const lng = parseFloat(btn.dataset.lng);
+      if (!lat || !lng) return;
+
+      btn.textContent = '...removing';
+      btn.disabled = true;
+      unflagGreenArrow(lat, lng).then(() => {
+        btn.textContent = '✓ Removed';
+        btn.style.color = 'var(--text2)';
+        setTimeout(() => refreshRoute(), 500);
+      }).catch(() => {
+        btn.textContent = '✕ Failed';
+        btn.disabled = false;
+      });
     });
   });
+}
+
+// ── Refresh route display (re-analyze and re-verify) ──
+async function refreshRoute() {
+  if (!routeResponse || !routeAnalysis) return;
+  const bounds = { north: -90, south: 90, east: -180, west: 180 };
+  routeResponse.routes.forEach(r => r.legs.forEach(leg => {
+    leg.steps.forEach(step => {
+      const lat = step.start_location.lat(), lng = step.start_location.lng();
+      if (lat > bounds.north) bounds.north = lat;
+      if (lat < bounds.south) bounds.south = lat;
+      if (lng > bounds.east) bounds.east = lng;
+      if (lng < bounds.west) bounds.west = lng;
+    });
+  }));
+  const [arrows, osm] = await Promise.all([
+    fetchCommunityArrows(bounds),
+    batchFetchOSMSignals(bounds),
+  ]);
+  const reAnalyzed = routeResponse.routes.map((r, i) => analyze(r, i));
+  for (const ra of reAnalyzed) {
+    await verifyLeftTurns(ra, routeResponse.routes[ra.routeIndex], arrows, osm);
+  }
+  reAnalyzed.sort((a, b) => a.unprotectedLefts !== b.unprotectedLefts ? a.unprotectedLefts - b.unprotectedLefts : a.dur - b.dur);
+  display(routeResponse, reAnalyzed[0]);
 }
 
 function bdg(text, color) {

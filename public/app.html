@@ -255,6 +255,19 @@
 
   <!-- Bottom: ETA bar -->
   <div id="hud-bottom" style="position:absolute;bottom:0;left:0;right:0;z-index:200;padding:0 16px 16px;pointer-events:none">
+    <!-- Speed display -->
+    <div id="hud-speed" style="display:flex;justify-content:center;margin-bottom:8px;pointer-events:auto">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:50%;width:80px;height:80px;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(0,0,0,0.4)">
+        <div id="speed-value" style="font-family:var(--font-d);font-size:28px;font-weight:900;color:var(--white);line-height:1">0</div>
+        <div style="font-family:var(--font-m);font-size:8px;color:var(--text2);letter-spacing:0.05em">MPH</div>
+      </div>
+      <div id="speed-limit-badge" style="display:none;position:relative;margin-left:-8px;margin-top:-4px">
+        <div style="background:var(--white);border:3px solid var(--red);border-radius:50%;width:44px;height:44px;display:flex;flex-direction:column;align-items:center;justify-content:center">
+          <div style="font-family:var(--font-d);font-size:9px;font-weight:700;color:#000;line-height:1">LIMIT</div>
+          <div id="speed-limit-value" style="font-family:var(--font-d);font-size:15px;font-weight:900;color:#000;line-height:1">—</div>
+        </div>
+      </div>
+    </div>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px 18px;box-shadow:0 -4px 24px rgba(0,0,0,0.5);pointer-events:auto">
       <div style="display:flex;align-items:center;justify-content:space-between">
         <div>
@@ -276,7 +289,7 @@
 </div>
 
 <script>
-let map, dirSvc, dirRen, fromAC, toAC, fromP = null, toP = null, mkrs = [], turnMarkers = [];
+let map, dirSvc, dirRen, fromAC, toAC, fromP = null, toP = null, mkrs = [], turnMarkers = [], speedOverlays = [];
 
 // ── Load ──
 async function boot() {
@@ -529,6 +542,166 @@ function checkOSMStopSign(lat, lng, osmData) {
     }
   }
   return false;
+}
+
+// ── Fetch speed limit from OSM for current location ──
+async function fetchSpeedLimit(lat, lng) {
+  try {
+    const query = `[out:json][timeout:5];way["highway"]["maxspeed"](around:30,${lat},${lng});out tags 1;`;
+    const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+
+    if (data.elements && data.elements.length > 0) {
+      const tags = data.elements[0].tags || {};
+      const maxspeed = tags.maxspeed || '';
+      let limit = parseSpeedLimit(maxspeed);
+
+      if (limit > 0) {
+        currentSpeedLimit = limit;
+        document.getElementById('speed-limit-badge').style.display = 'block';
+        document.getElementById('speed-limit-value').textContent = limit;
+      } else {
+        currentSpeedLimit = 0;
+        document.getElementById('speed-limit-badge').style.display = 'none';
+      }
+    } else {
+      currentSpeedLimit = 0;
+      document.getElementById('speed-limit-badge').style.display = 'none';
+    }
+  } catch {}
+}
+
+function parseSpeedLimit(maxspeed) {
+  if (!maxspeed) return 0;
+  const match = maxspeed.match(/(\d+)/);
+  if (!match) return 0;
+  let limit = parseInt(match[1]);
+  // Convert km/h to mph if needed
+  if (maxspeed.includes('km/h') || (!maxspeed.includes('mph') && limit > 85)) {
+    limit = Math.round(limit * 0.621371);
+  }
+  return limit;
+}
+
+// Speed limit colors
+function speedColor(limit) {
+  if (limit <= 25) return '#22c55e';    // green — residential
+  if (limit <= 35) return '#06d6a0';    // cyan — local roads
+  if (limit <= 45) return '#f59e0b';    // amber — arterials
+  if (limit <= 55) return '#f97316';    // orange — highways
+  return '#ef4444';                      // red — freeways/high speed
+}
+
+// ── Draw speed limit overlay on the route ──
+async function drawSpeedOverlay(route) {
+  // Clear old overlays
+  speedOverlays.forEach(p => p.setMap(null));
+  speedOverlays = [];
+
+  // Collect sample points along the route (every ~500m)
+  const samplePoints = [];
+  route.legs.forEach(leg => {
+    leg.steps.forEach(step => {
+      // Use the step's path points
+      const path = step.path || [step.start_location, step.end_location];
+      const stepDist = step.distance.value;
+
+      // For short steps, just sample the midpoint
+      if (stepDist < 300) {
+        samplePoints.push({
+          points: path.map(p => ({ lat: p.lat(), lng: p.lng() })),
+          lat: step.start_location.lat(),
+          lng: step.start_location.lng(),
+        });
+      } else {
+        // For longer steps, sample start
+        samplePoints.push({
+          points: path.map(p => ({ lat: p.lat(), lng: p.lng() })),
+          lat: step.start_location.lat(),
+          lng: step.start_location.lng(),
+        });
+      }
+    });
+  });
+
+  if (samplePoints.length === 0) return;
+
+  // Batch fetch speed limits for the route area
+  const bounds = { south: 90, north: -90, west: 180, east: -180 };
+  samplePoints.forEach(sp => {
+    if (sp.lat < bounds.south) bounds.south = sp.lat;
+    if (sp.lat > bounds.north) bounds.north = sp.lat;
+    if (sp.lng < bounds.west) bounds.west = sp.lng;
+    if (sp.lng > bounds.east) bounds.east = sp.lng;
+  });
+
+  try {
+    const query = `[out:json][timeout:10];way["highway"]["maxspeed"](${bounds.south - 0.002},${bounds.west - 0.002},${bounds.north + 0.002},${bounds.east + 0.002});out body geom;`;
+    const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.elements || data.elements.length === 0) return;
+
+    // For each step segment, find the nearest road with a speed limit
+    route.legs.forEach(leg => {
+      leg.steps.forEach(step => {
+        const stepLat = step.start_location.lat();
+        const stepLng = step.start_location.lng();
+        const path = step.path || [step.start_location, step.end_location];
+
+        // Find nearest OSM way
+        let nearestLimit = 0;
+        let nearestDist = Infinity;
+        for (const el of data.elements) {
+          if (!el.tags?.maxspeed || !el.geometry) continue;
+          // Check distance to any node in the way
+          for (const node of el.geometry) {
+            const d = haversine(stepLat, stepLng, node.lat, node.lon);
+            if (d < nearestDist) {
+              nearestDist = d;
+              nearestLimit = parseSpeedLimit(el.tags.maxspeed);
+            }
+          }
+        }
+
+        // Draw colored segment if we found a speed limit within 50m
+        if (nearestLimit > 0 && nearestDist < 50) {
+          const color = speedColor(nearestLimit);
+          const polyline = new google.maps.Polyline({
+            path: path,
+            geodesic: true,
+            strokeColor: color,
+            strokeOpacity: 0.7,
+            strokeWeight: 8,
+            map: map,
+            zIndex: 2,
+          });
+          speedOverlays.push(polyline);
+        }
+      });
+    });
+
+    // Add a legend to the map
+    addSpeedLegend();
+  } catch {}
+}
+
+let speedLegend = null;
+function addSpeedLegend() {
+  if (speedLegend) return; // only add once
+  speedLegend = document.createElement('div');
+  speedLegend.style.cssText = 'background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:8px 12px;margin:10px;box-shadow:0 4px 12px rgba(0,0,0,0.3)';
+  speedLegend.innerHTML = `
+    <div style="font-family:var(--font-m);font-size:9px;color:var(--text2);margin-bottom:4px;letter-spacing:0.05em">SPEED LIMITS</div>
+    <div style="display:flex;gap:6;flex-wrap:wrap">
+      <span style="display:flex;align-items:center;gap:3;font-size:9px;color:var(--text)"><span style="width:12px;height:4px;border-radius:2px;background:#22c55e"></span>≤25</span>
+      <span style="display:flex;align-items:center;gap:3;font-size:9px;color:var(--text)"><span style="width:12px;height:4px;border-radius:2px;background:#06d6a0"></span>35</span>
+      <span style="display:flex;align-items:center;gap:3;font-size:9px;color:var(--text)"><span style="width:12px;height:4px;border-radius:2px;background:#f59e0b"></span>45</span>
+      <span style="display:flex;align-items:center;gap:3;font-size:9px;color:var(--text)"><span style="width:12px;height:4px;border-radius:2px;background:#f97316"></span>55</span>
+      <span style="display:flex;align-items:center;gap:3;font-size:9px;color:var(--text)"><span style="width:12px;height:4px;border-radius:2px;background:#ef4444"></span>65+</span>
+    </div>`;
+  map.controls[google.maps.ControlPosition.LEFT_BOTTOM].push(speedLegend);
 }
 
 // ── Navigate ──
@@ -1221,6 +1394,9 @@ function display(response, a) {
       });
     });
   });
+
+  // Draw speed limit overlay on the route
+  drawSpeedOverlay(r);
 }
 
 // ── Refresh route display (re-analyze and re-verify) ──
@@ -1256,6 +1432,7 @@ function clearOverlays() {
   if (dirRen) { dirRen.setMap(null); dirRen = null; }
   mkrs.forEach(m => m.setMap(null)); mkrs = [];
   turnMarkers = [];
+  speedOverlays.forEach(p => p.setMap(null)); speedOverlays = [];
 }
 
 function clearRoute() {
@@ -1287,6 +1464,8 @@ let locationMarker = null;
 let lastSpokenIdx = -1;
 let routeResponse = null;
 let routeAnalysis = null;
+let currentSpeedLimit = 0; // mph, 0 = unknown
+let lastSpeedLimitCheck = 0; // timestamp of last OSM query
 
 const ANNOUNCE_DISTANCE = 150;  // ~500 feet — first announcement
 const ARRIVE_DISTANCE = 25;     // meters — advance to next step
@@ -1422,6 +1601,34 @@ function onPositionUpdate(pos) {
   const lat = pos.coords.latitude;
   const lng = pos.coords.longitude;
   const accuracy = pos.coords.accuracy;
+
+  // ── Update current speed ──
+  const speedMps = pos.coords.speed; // meters per second, null if unavailable
+  if (speedMps !== null && speedMps >= 0) {
+    const speedMph = Math.round(speedMps * 2.23694); // convert to mph
+    const speedEl = document.getElementById('speed-value');
+    speedEl.textContent = speedMph;
+
+    // Color based on speed limit (if known)
+    if (currentSpeedLimit > 0) {
+      if (speedMph > currentSpeedLimit + 5) {
+        speedEl.style.color = 'var(--red)'; // over limit
+      } else if (speedMph > currentSpeedLimit - 3) {
+        speedEl.style.color = 'var(--amber)'; // near limit
+      } else {
+        speedEl.style.color = 'var(--white)'; // under limit
+      }
+    } else {
+      speedEl.style.color = 'var(--white)';
+    }
+  }
+
+  // ── Fetch speed limit from OSM (throttled — max once per 10 seconds) ──
+  const now = Date.now();
+  if (now - lastSpeedLimitCheck > 10000) {
+    lastSpeedLimitCheck = now;
+    fetchSpeedLimit(lat, lng);
+  }
 
   // Update location marker on map
   if (!locationMarker) {

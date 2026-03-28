@@ -211,6 +211,8 @@
         <button class="nb" onclick="clearRoute()">New Route</button>
       </div>
     </div>
+    <!-- Route alternatives switcher -->
+    <div id="route-switcher" style="display:none;margin-top:8px;display:flex;gap:6;overflow-x:auto"></div>
     <div class="bdg-row" id="br"></div>
     <!-- Route choice buttons -->
     <div id="route-choice" style="display:none;margin-top:10px">
@@ -291,6 +293,7 @@
 
 <script>
 let map, dirSvc, dirRen, fromAC, toAC, fromP = null, toP = null, mkrs = [], turnMarkers = [], speedOverlays = [];
+let allRouteAnalyses = []; // all analyzed routes for switching
 
 // ── Load ──
 async function boot() {
@@ -723,13 +726,11 @@ async function navigate() {
     const origin = fromP?.geometry ? fromP.geometry.location : fi;
     const destination = toP?.geometry ? toP.geometry.location : ti;
 
-    // Step 1: Get initial routes from Google
+    // Step 1: Get route from Google — simple call matching what Google Maps does
     const result = await new Promise((res, rej) => {
       dirSvc.route({
         origin, destination,
         travelMode: 'DRIVING',
-        provideRouteAlternatives: true,
-        drivingOptions: { departureTime: new Date(), trafficModel: 'bestguess' },
       }, (r, s) => s === 'OK' ? res(r) : rej(s));
     });
 
@@ -753,14 +754,13 @@ async function navigate() {
       batchFetchOSMSignals(bounds),
     ]);
 
-    // Step 2: Analyze all routes
+    // Step 2: Analyze the route
     const analyzed = result.routes.map((r, i) => analyze(r, i));
     for (const a of analyzed) {
       await verifyLeftTurns(a, result.routes[a.routeIndex], communityArrows, osmSignals);
     }
 
-    // Use Google's recommended route (index 0) — don't override Google's choice
-    // The app overlays safety warnings on whatever route Google picks
+    // Use Google's route
     const best = analyzed[0];
 
     display(result, best);
@@ -1142,8 +1142,17 @@ function analyze(route, idx) {
     else if (m.includes('fork') || m.includes('ramp')) type = 'exit';
     else if (isFwy) type = 'freeway';
 
+    let instruction = ins.replace(/<[^>]*>/g, '');
+
+    // Clean up confusing "toward [cross street]" from first step
+    // Google says "Head east on E Vaughn Ave toward E Hearne Way" — nobody knows what Hearne Way is
+    // Just say "Head east on E Vaughn Ave"
+    if (stepIdx === 0 && instruction.includes('toward')) {
+      instruction = instruction.replace(/\s+toward\s+.+$/i, '');
+    }
+
     steps.push({
-      instruction: ins.replace(/<[^>]*>/g, ''),
+      instruction,
       distance: step.distance.text, duration: step.duration.text,
       type, maneuver: m, safety, isFreeway: isFwy,
     });
@@ -1261,6 +1270,9 @@ function display(response, a) {
 
   document.getElementById('dm').innerHTML = `${a.distText} · <b>${a.durText}</b>`;
   document.getElementById('df').textContent = a.usesFreeway ? `🛣 Via ${a.fwyNames.join(' → ')}` : '';
+
+  // ── Route switcher (hidden - single route) ──
+  document.getElementById('route-switcher').style.display = 'none';
 
   // Calculate three-rights ETA: Google's ETA + ~2 min per unprotected left
   const MINUTES_PER_DETOUR = 2;
@@ -1418,6 +1430,11 @@ async function refreshRoute() {
 
 function bdg(text, color) {
   return `<div class="bdg" style="background:var(${color}-dim);color:var(${color});border:1px solid rgba(0,0,0,0.1)">${text}</div>`;
+}
+
+function switchRoute(idx) {
+  if (!routeResponse || !allRouteAnalyses[idx]) return;
+  display(routeResponse, allRouteAnalyses[idx]);
 }
 
 function clearOverlays() {

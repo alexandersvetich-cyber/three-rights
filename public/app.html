@@ -279,6 +279,7 @@
           <div style="font-size:10px;color:var(--text2)">arrival</div>
         </div>
         <div style="display:flex;gap:8">
+          <button onclick="showReportMenu()" id="report-btn" style="width:36px;height:36px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);color:var(--amber);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center" title="Report incident">⚠</button>
           <button onclick="toggleOverview()" id="overview-btn" style="width:36px;height:36px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);color:var(--cyan);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center" title="Toggle overview">🗺</button>
           <button onclick="toggleMute()" id="mute-btn" style="width:36px;height:36px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);color:var(--cyan);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center" title="Toggle voice">🔊</button>
           <button onclick="toggleNavigation()" style="width:36px;height:36px;border-radius:8px;background:var(--red);border:none;color:var(--white);font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-weight:700" title="Stop navigation">✕</button>
@@ -1466,6 +1467,7 @@ let routeResponse = null;
 let routeAnalysis = null;
 let currentSpeedLimit = 0; // mph, 0 = unknown
 let lastSpeedLimitCheck = 0; // timestamp of last OSM query
+let lastIncidentCheck = 0; // timestamp of last incident refresh
 
 const ANNOUNCE_DISTANCE = 150;  // ~500 feet — first announcement
 const ARRIVE_DISTANCE = 25;     // meters — advance to next step
@@ -1564,6 +1566,13 @@ function startNavigation() {
   // Initial voice
   speak('Navigation started. Follow the route.');
   updateNavUI();
+
+  // Load nearby incidents
+  const route = routeResponse.routes[routeAnalysis.routeIndex];
+  const midLeg = route.legs[0];
+  const midLat = (midLeg.start_location.lat() + midLeg.end_location.lat()) / 2;
+  const midLng = (midLeg.start_location.lng() + midLeg.end_location.lng()) / 2;
+  loadNearbyIncidents(midLat, midLng);
 }
 
 function stopNavigation() {
@@ -1574,6 +1583,9 @@ function stopNavigation() {
     watchId = null;
   }
   if (locationMarker) { locationMarker.setMap(null); locationMarker = null; }
+  incidentMarkers.forEach(m => m.setMap(null)); incidentMarkers = [];
+  const reportMenu = document.getElementById('report-menu');
+  if (reportMenu) reportMenu.remove();
 
   // Restore UI
   document.getElementById('nav-hud').style.display = 'none';
@@ -1628,6 +1640,12 @@ function onPositionUpdate(pos) {
   if (now - lastSpeedLimitCheck > 10000) {
     lastSpeedLimitCheck = now;
     fetchSpeedLimit(lat, lng);
+  }
+
+  // ── Refresh nearby incidents (throttled — every 60 seconds) ──
+  if (now - lastIncidentCheck > 60000) {
+    lastIncidentCheck = now;
+    loadNearbyIncidents(lat, lng);
   }
 
   // Update location marker on map
@@ -2082,6 +2100,161 @@ function useGPS() {
     },
     { enableHighAccuracy: true, timeout: 8000 }
   );
+}
+
+// ══════════════════════════════════════════════════════════════════
+// INCIDENT REPORTS — Flag accidents, closures, hazards
+// ══════════════════════════════════════════════════════════════════
+let incidentMarkers = [];
+let reportMenuOpen = false;
+
+const INCIDENT_TYPES = {
+  'accident': { icon: '🚗', label: 'Accident', color: '#ef4444' },
+  'closure': { icon: '🚧', label: 'Road Closed', color: '#f97316' },
+  'hazard': { icon: '⚠️', label: 'Hazard', color: '#f59e0b' },
+  'police': { icon: '🚔', label: 'Police', color: '#3b82f6' },
+  'slowdown': { icon: '🐢', label: 'Slowdown', color: '#f59e0b' },
+  'construction': { icon: '🏗', label: 'Construction', color: '#f97316' },
+};
+
+function showReportMenu() {
+  // Get current location
+  if (!locationMarker) {
+    speak('Cannot report — GPS not available');
+    return;
+  }
+  const pos = locationMarker.getPosition();
+  const lat = pos.lat();
+  const lng = pos.lng();
+
+  // Toggle menu
+  let menu = document.getElementById('report-menu');
+  if (menu) { menu.remove(); reportMenuOpen = false; return; }
+
+  reportMenuOpen = true;
+  menu = document.createElement('div');
+  menu.id = 'report-menu';
+  menu.style.cssText = 'position:fixed;bottom:140px;right:16px;z-index:300;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px;box-shadow:0 8px 32px rgba(0,0,0,0.5);animation:su 0.2s ease-out';
+
+  let html = '<div style="font-family:var(--font-d);font-size:12px;font-weight:700;color:var(--white);margin-bottom:8px">Report at your location</div>';
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
+
+  for (const [type, info] of Object.entries(INCIDENT_TYPES)) {
+    html += `<button onclick="reportIncident('${type}',${lat},${lng})" style="padding:10px 8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;font-family:var(--font-m);font-size:11px;color:var(--text);cursor:pointer;text-align:center;line-height:1.3">${info.icon}<br>${info.label}</button>`;
+  }
+
+  html += '</div>';
+  html += '<button onclick="document.getElementById(\'report-menu\').remove()" style="width:100%;margin-top:6px;padding:6px;background:none;border:1px solid var(--border);border-radius:6px;color:var(--text2);font-family:var(--font-m);font-size:10px;cursor:pointer">Cancel</button>';
+
+  menu.innerHTML = html;
+  document.body.appendChild(menu);
+}
+
+async function reportIncident(type, lat, lng) {
+  // Close menu
+  const menu = document.getElementById('report-menu');
+  if (menu) menu.remove();
+  reportMenuOpen = false;
+
+  try {
+    await supabaseRequest('incidents', 'POST', {
+      lat: Math.round(lat * 100000) / 100000,
+      lng: Math.round(lng * 100000) / 100000,
+      type: type,
+      description: INCIDENT_TYPES[type].label,
+    });
+
+    speak(`${INCIDENT_TYPES[type].label} reported. Other drivers will be alerted.`);
+
+    // Refresh incidents on map
+    loadNearbyIncidents(lat, lng);
+  } catch (e) {
+    speak('Could not report incident. Try again.');
+  }
+}
+
+async function loadNearbyIncidents(lat, lng) {
+  // Clear old incident markers
+  incidentMarkers.forEach(m => m.setMap(null));
+  incidentMarkers = [];
+
+  try {
+    // Fetch active incidents within ~5km
+    const range = 0.05; // ~5km in degrees
+    const data = await supabaseRequest(
+      `incidents?lat=gte.${lat - range}&lat=lte.${lat + range}&lng=gte.${lng - range}&lng=lte.${lng + range}&expires_at=gte.${new Date().toISOString()}&select=*`
+    );
+
+    if (!data || data.length === 0) return;
+
+    data.forEach(incident => {
+      const info = INCIDENT_TYPES[incident.type] || { icon: '⚠️', label: 'Incident', color: '#f59e0b' };
+
+      // Time ago
+      const mins = Math.round((Date.now() - new Date(incident.reported_at).getTime()) / 60000);
+      const timeAgo = mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`;
+
+      // Create marker
+      const marker = new google.maps.Marker({
+        position: { lat: incident.lat, lng: incident.lng },
+        map: map,
+        zIndex: 150,
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 14,
+          fillColor: info.color,
+          fillOpacity: 0.9,
+          strokeColor: '#07090f',
+          strokeWeight: 2,
+        },
+        label: { text: info.icon, fontSize: '14px' },
+        title: `${info.label} — ${timeAgo}`,
+      });
+
+      // Info window
+      const infoWindow = new google.maps.InfoWindow({
+        content: `
+          <div style="font-family:'DM Mono',monospace;font-size:12px;color:#1a1a2e;max-width:200px;line-height:1.5">
+            <div style="font-weight:600;margin-bottom:4px">${info.icon} ${info.label}</div>
+            <div style="font-size:11px;color:#666">${timeAgo} · ${incident.confirmations} report${incident.confirmations > 1 ? 's' : ''}</div>
+            <button onclick="confirmIncident(${incident.id})" style="margin-top:6px;padding:4px 10px;background:#06d6a0;color:#07090f;border:none;border-radius:4px;font-size:11px;cursor:pointer;font-weight:600">👍 Still there</button>
+            <button onclick="dismissIncident(${incident.id})" style="margin-top:6px;padding:4px 10px;background:#ef4444;color:white;border:none;border-radius:4px;font-size:11px;cursor:pointer;font-weight:600;margin-left:4px">👎 Gone</button>
+          </div>`,
+      });
+      marker.addListener('click', () => infoWindow.open(map, marker));
+
+      incidentMarkers.push(marker);
+    });
+  } catch {}
+}
+
+async function confirmIncident(id) {
+  try {
+    // Get current count first
+    const data = await supabaseRequest(`incidents?id=eq.${id}&select=confirmations`);
+    if (data && data.length > 0) {
+      await supabaseRequest(`incidents?id=eq.${id}`, 'PATCH', {
+        confirmations: data[0].confirmations + 1,
+        expires_at: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(), // extend 2 more hours
+      });
+      speak('Thanks. Incident confirmed.');
+    }
+  } catch {}
+}
+
+async function dismissIncident(id) {
+  try {
+    // Set expiry to now (effectively removing it)
+    await supabaseRequest(`incidents?id=eq.${id}`, 'PATCH', {
+      expires_at: new Date().toISOString(),
+    });
+    speak('Incident dismissed. Thanks for the update.');
+    // Refresh markers
+    if (locationMarker) {
+      const pos = locationMarker.getPosition();
+      loadNearbyIncidents(pos.lat(), pos.lng());
+    }
+  } catch {}
 }
 
 // ══════════════════════════════════════════════════════════════════

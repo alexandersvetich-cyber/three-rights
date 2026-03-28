@@ -763,6 +763,10 @@ async function navigate() {
     // Use Google's route
     const best = analyzed[0];
 
+    // Calculate three-rights detour routes for each unprotected left
+    btn.innerHTML = '<span class="ld">CALCULATING THREE-RIGHTS DETOURS...</span>';
+    await calculateDetours(best, result.routes[best.routeIndex]);
+
     display(result, best);
   } catch (e) {
     showErr(`Route failed: ${e}. Check addresses.`);
@@ -1167,6 +1171,79 @@ function analyze(route, idx) {
 }
 
 // ── Display ──
+// ── Calculate three-rights detour for each unprotected left ──
+async function calculateDetours(analysis, route) {
+  let stepIdx = 0;
+  const allGSteps = [];
+  route.legs.forEach(leg => leg.steps.forEach(s => allGSteps.push(s)));
+
+  for (let i = 0; i < allGSteps.length; i++) {
+    const s = analysis.steps[i];
+    if (!s || s.type !== 'unprotected_left') continue;
+
+    const gStep = allGSteps[i];
+    const turnLat = gStep.start_location.lat();
+    const turnLng = gStep.start_location.lng();
+    // Where the left turn would END (the destination of the left)
+    const destLat = gStep.end_location.lat();
+    const destLng = gStep.end_location.lng();
+
+    // Get approach direction from previous step
+    const prevStep = i > 0 ? allGSteps[i - 1] : null;
+    if (!prevStep) continue;
+
+    const approachLat = turnLat - prevStep.start_location.lat();
+    const approachLng = turnLng - prevStep.start_location.lng();
+    const dist = Math.sqrt(approachLat ** 2 + approachLng ** 2);
+    if (dist === 0) continue;
+
+    const normLat = approachLat / dist;
+    const normLng = approachLng / dist;
+
+    // RIGHT direction = 90° clockwise rotation of approach
+    const rightLat = normLng;
+    const rightLng = -normLat;
+
+    // Place a waypoint ~150m to the RIGHT of the intersection
+    // This forces Google to route RIGHT first, then find a way to the left's destination
+    const wpLat = turnLat + rightLat * 0.0015;
+    const wpLng = turnLng + rightLng * 0.0015;
+
+    try {
+      const detour = await new Promise((res, rej) => {
+        dirSvc.route({
+          origin: new google.maps.LatLng(turnLat, turnLng),
+          destination: new google.maps.LatLng(destLat, destLng),
+          waypoints: [{ location: new google.maps.LatLng(wpLat, wpLng), stopover: false }],
+          travelMode: 'DRIVING',
+        }, (r, st) => st === 'OK' ? res(r) : rej(st));
+      });
+
+      // Extract the detour steps
+      const detourSteps = [];
+      detour.routes[0].legs.forEach(leg => {
+        leg.steps.forEach(ds => {
+          const inst = ds.instructions.replace(/<[^>]*>/g, '');
+          if (inst && !inst.toLowerCase().includes('head ')) {
+            detourSteps.push({
+              instruction: inst,
+              distance: ds.distance.text,
+              duration: ds.duration.text,
+            });
+          }
+        });
+      });
+
+      // Store detour steps on the analysis step
+      if (detourSteps.length > 0) {
+        s.detourSteps = detourSteps;
+      }
+    } catch {
+      // Detour calculation failed — leave without detour info
+    }
+  }
+}
+
 function display(response, a) {
   clearOverlays();
 
@@ -1334,6 +1411,7 @@ function display(response, a) {
       <div style="flex:1;min-width:0">
         <div class="stp-t" style="${isUL?'color:var(--amber);font-weight:600':isF?'color:var(--cyan);font-weight:600':''}">${isUL ? '↱ TURN RIGHT instead — ' + s.instruction.replace(/Turn left/i, 'skip left') : s.instruction}</div>
         ${s.safety?`<div class="stp-n" style="color:${isUL?'var(--amber)':'var(--green)'}">${isUL?'↱':'🟢'} ${isUL ? 'Three rights make a left — turn right here' : s.safety.reason}</div>`:''}
+        ${isUL && s.detourSteps ? `<div style="margin-top:6px;padding:8px 10px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.15);border-radius:6px"><div style="font-family:var(--font-m);font-size:9px;color:var(--amber);letter-spacing:0.05em;margin-bottom:4px">THREE-RIGHTS DETOUR:</div>${s.detourSteps.map((ds, di) => `<div style="font-family:var(--font-m);font-size:11px;color:var(--text);padding:2px 0">↱ ${di + 1}. ${ds.instruction} <span style="color:var(--text2);font-size:9px">${ds.distance}</span></div>`).join('')}</div>` : ''}
         ${isF&&s.type==='merge'?'<div class="stp-n" style="color:var(--cyan)">Right-side merge — no left turns on freeways</div>':''}
         <div class="stp-d">${s.distance} · ${s.duration}</div>
         ${flagBtnHtml}${unflagBtnHtml}

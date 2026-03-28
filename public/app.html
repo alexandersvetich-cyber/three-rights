@@ -759,18 +759,12 @@ async function navigate() {
       await verifyLeftTurns(a, result.routes[a.routeIndex], communityArrows, osmSignals);
     }
 
-    // Find the FASTEST route (by duration, regardless of lefts)
-    const fastest = [...analyzed].sort((a, b) => a.dur - b.dur)[0];
+    // Pick the FASTEST route — always show Google's best route
+    // The app overlays safety warnings, it doesn't try to pick a different route
+    analyzed.sort((a, b) => a.dur - b.dur);
+    const best = analyzed[0];
 
-    // Pick the SAFEST route (fewest unprotected lefts, then fastest)
-    analyzed.sort((a, b) => a.unprotectedLefts !== b.unprotectedLefts ? a.unprotectedLefts - b.unprotectedLefts : a.dur - b.dur);
-    const safest = analyzed[0];
-
-    // Calculate time difference
-    safest.etaDiffSeconds = safest.dur - fastest.dur;
-    safest.fastestDurText = fastest.durText;
-
-    display(result, safest);
+    display(result, best);
   } catch (e) {
     showErr(`Route failed: ${e}. Check addresses.`);
   }
@@ -1280,9 +1274,9 @@ function display(response, a) {
   if (a.unprotectedLefts > 0) {
     document.getElementById('route-choice').style.display = 'block';
     document.getElementById('nav-go').style.display = 'none';
-    document.getElementById('safe-eta').textContent = `~${safeMinutes} min · no unprotected lefts`;
-    document.getElementById('fast-eta').textContent = `${googleMinutes} min · ${a.unprotectedLefts} unprotected left${a.unprotectedLefts>1?'s':''}`;
-    document.getElementById('route-diff').textContent = `Safe route adds ~${a.unprotectedLefts * MINUTES_PER_DETOUR} min for ${a.unprotectedLefts} three-right detour${a.unprotectedLefts>1?'s':''}`;
+    document.getElementById('safe-eta').textContent = `~${safeMinutes} min · voice says "turn right"`;
+    document.getElementById('fast-eta').textContent = `${googleMinutes} min · voice says "caution"`;
+    document.getElementById('route-diff').textContent = `${a.unprotectedLefts} unprotected left${a.unprotectedLefts>1?'s':''} · safe mode adds ~${a.unprotectedLefts * MINUTES_PER_DETOUR} min for three-right detours`;
   } else {
     document.getElementById('route-choice').style.display = 'none';
     document.getElementById('nav-go').style.display = 'block';

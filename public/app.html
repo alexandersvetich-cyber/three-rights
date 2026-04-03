@@ -726,7 +726,7 @@ async function navigate() {
     const origin = fromP?.geometry ? fromP.geometry.location : fi;
     const destination = toP?.geometry ? toP.geometry.location : ti;
 
-    // Step 1: Get route from Google — simple call matching what Google Maps does
+    // Step 1: Get Google's default route
     const result = await new Promise((res, rej) => {
       dirSvc.route({
         origin, destination,
@@ -760,10 +760,21 @@ async function navigate() {
       await verifyLeftTurns(a, result.routes[a.routeIndex], communityArrows, osmSignals);
     }
 
-    // Use Google's route
-    const best = analyzed[0];
+    let best = analyzed[0];
+    let bestResult = result;
 
-    display(result, best);
+    // Step 3: If unprotected lefts exist, re-route the ENTIRE trip with mirror waypoints
+    if (best.unprotectedLefts > 0) {
+      btn.innerHTML = '<span class="ld">ELIMINATING LEFT TURNS...</span>';
+
+      const rerouted = await rerouteWithMirrorWaypoints(origin, destination, best, result.routes[best.routeIndex], communityArrows, osmSignals);
+      if (rerouted) {
+        bestResult = rerouted.result;
+        best = rerouted.analysis;
+      }
+    }
+
+    display(bestResult, best);
   } catch (e) {
     showErr(`Route failed: ${e}. Check addresses.`);
   }
@@ -1237,6 +1248,88 @@ async function calculateDetours(analysis, route) {
   }
 }
 
+// ── Re-route entire trip with mirror waypoints to force right turns ──
+async function rerouteWithMirrorWaypoints(origin, destination, analysis, route, communityArrows, osmSignals) {
+  const allGSteps = [];
+  route.legs.forEach(leg => leg.steps.forEach(s => allGSteps.push(s)));
+
+  // For each unprotected left, create a mirror waypoint on the RIGHT side
+  const waypoints = [];
+  for (let i = 0; i < allGSteps.length; i++) {
+    const s = analysis.steps[i];
+    if (!s || s.type !== 'unprotected_left') continue;
+
+    const gStep = allGSteps[i];
+    const turnLat = gStep.start_location.lat();
+    const turnLng = gStep.start_location.lng();
+    const leftEndLat = gStep.end_location.lat();
+    const leftEndLng = gStep.end_location.lng();
+
+    // Mirror: if left goes north, mirror goes south by the same amount
+    const mirrorLat = turnLat - (leftEndLat - turnLat);
+    const mirrorLng = turnLng - (leftEndLng - turnLng);
+
+    waypoints.push({
+      location: new google.maps.LatLng(mirrorLat, mirrorLng),
+      stopover: true,
+    });
+  }
+
+  if (waypoints.length === 0) return null;
+
+  // Limit to 8 waypoints (Google max)
+  const limitedWaypoints = waypoints.slice(0, 8);
+
+  try {
+    // Re-request the FULL route with mirror waypoints
+    const rerouted = await new Promise((res, rej) => {
+      dirSvc.route({
+        origin, destination,
+        waypoints: limitedWaypoints,
+        travelMode: 'DRIVING',
+      }, (r, s) => s === 'OK' ? res(r) : rej(s));
+    });
+
+    // Re-analyze — need fresh bounds for the new route
+    const bounds2 = { north: -90, south: 90, east: -180, west: 180 };
+    rerouted.routes.forEach(r => r.legs.forEach(leg => {
+      leg.steps.forEach(step => {
+        const lat = step.start_location.lat(), lng = step.start_location.lng();
+        if (lat > bounds2.north) bounds2.north = lat;
+        if (lat < bounds2.south) bounds2.south = lat;
+        if (lng > bounds2.east) bounds2.east = lng;
+        if (lng < bounds2.west) bounds2.west = lng;
+      });
+    }));
+
+    const [arrows2, osm2] = await Promise.all([
+      fetchCommunityArrows(bounds2),
+      batchFetchOSMSignals(bounds2),
+    ]);
+
+    const reAnalyzed = rerouted.routes.map((r, i) => analyze(r, i));
+    for (const a of reAnalyzed) {
+      await verifyLeftTurns(a, rerouted.routes[a.routeIndex], arrows2, osm2);
+    }
+
+    // Pick the route with fewest unprotected lefts
+    reAnalyzed.sort((a, b) => a.unprotectedLefts !== b.unprotectedLefts
+      ? a.unprotectedLefts - b.unprotectedLefts
+      : a.dur - b.dur);
+
+    const best = reAnalyzed[0];
+
+    // Only use if it's better than the original
+    if (best.unprotectedLefts < analysis.unprotectedLefts) {
+      return { result: rerouted, analysis: best };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function display(response, a) {
   clearOverlays();
 
@@ -1399,17 +1492,17 @@ function display(response, a) {
       return;
     }
 
-    // Unprotected left WITHOUT detour — show "Turn right onto [street]"
+    // Unprotected left — show with amber warning
     if (isUL) {
-      const streetName = s.instruction.match(/onto\s+(.+)/i)?.[1] || 'next street';
       const isStop = s.safety?.reason?.toLowerCase().includes('stop sign');
       const flagBtn = (!isStop && stepLat) ? `<button class="flag-arrow-btn" data-lat="${stepLat}" data-lng="${stepLng}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--cyan);cursor:pointer;white-space:nowrap">🟢 I know this has a green arrow</button>` : '';
       const d = document.createElement('div');
       d.className = 'stp'; d.style.background = 'var(--amber-dim)'; d.style.cursor = 'pointer';
       d.innerHTML = `
-        <div class="stp-i" style="background:var(--amber);color:var(--white)">↱</div>
+        <div class="stp-i" style="background:var(--amber);color:var(--white)">⚠</div>
         <div style="flex:1;min-width:0">
-          <div class="stp-t" style="color:var(--amber);font-weight:600">Turn right onto ${streetName}</div>
+          <div class="stp-t" style="color:var(--amber);font-weight:600">${s.instruction}</div>
+          <div class="stp-n" style="color:var(--amber)">⚠ Unprotected left — no green arrow confirmed</div>
           <div class="stp-d">${s.distance} · ${s.duration}</div>
           ${flagBtn}
         </div>`;

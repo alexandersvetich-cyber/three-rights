@@ -1272,8 +1272,7 @@ async function rerouteWithMirrorWaypoints(origin, destination, analysis, route, 
     const leftEndLat = gStep.end_location.lat();
     const leftEndLng = gStep.end_location.lng();
 
-    // Small nudge in the RIGHT direction — just enough to force Google right
-    // Don't mirror the full distance, just go ~250m (0.0025 degrees) 
+    // Nudge ~500m in right direction to reach the next major cross street
     const prevStep = i > 0 ? allGSteps[i - 1] : null;
     if (!prevStep) continue;
 
@@ -1284,17 +1283,16 @@ async function rerouteWithMirrorWaypoints(origin, destination, analysis, route, 
 
     const normLat = dLat / dist;
     const normLng = dLng / dist;
-    // RIGHT = 90° clockwise
     const rightLat = normLng;
     const rightLng = -normLat;
 
-    // Nudge 250m in right direction — stays on the same street
-    const nudgeLat = turnLat + rightLat * 0.0025;
-    const nudgeLng = turnLng + rightLng * 0.0025;
+    // 500m in right direction — should reach the next major cross street
+    const nudgeLat = turnLat + rightLat * 0.005;
+    const nudgeLng = turnLng + rightLng * 0.005;
 
     waypoints.push({
       location: new google.maps.LatLng(nudgeLat, nudgeLng),
-      stopover: true,
+      stopover: false, // via point, not a stop — Google won't loop back
     });
   }
 
@@ -1342,9 +1340,8 @@ async function rerouteWithMirrorWaypoints(origin, destination, analysis, route, 
 
     const best = reAnalyzed[0];
 
-    // Use rerouted route if it has fewer or equal unprotected lefts
-    // (equal is fine — the reroute avoids the ORIGINAL problem lefts even if new ones appear)
-    if (best.unprotectedLefts <= analysis.unprotectedLefts) {
+    // Only use if strictly fewer unprotected lefts
+    if (best.unprotectedLefts < analysis.unprotectedLefts) {
       return { result: rerouted, analysis: best };
     }
 

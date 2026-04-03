@@ -763,10 +763,6 @@ async function navigate() {
     // Use Google's route
     const best = analyzed[0];
 
-    // Calculate right-turn detours for each unprotected left
-    btn.innerHTML = '<span class="ld">CALCULATING DETOURS...</span>';
-    await calculateDetours(best, result.routes[best.routeIndex]);
-
     display(result, best);
   } catch (e) {
     showErr(`Route failed: ${e}. Check addresses.`);

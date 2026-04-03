@@ -1173,7 +1173,6 @@ function analyze(route, idx) {
 // ── Display ──
 // ── Calculate three-rights detour for each unprotected left ──
 async function calculateDetours(analysis, route) {
-  let stepIdx = 0;
   const allGSteps = [];
   route.legs.forEach(leg => leg.steps.forEach(s => allGSteps.push(s)));
 
@@ -1184,9 +1183,16 @@ async function calculateDetours(analysis, route) {
     const gStep = allGSteps[i];
     const turnLat = gStep.start_location.lat();
     const turnLng = gStep.start_location.lng();
-    // Where the left turn would END (the destination of the left)
+    // Where the left turn would END UP
     const destLat = gStep.end_location.lat();
     const destLng = gStep.end_location.lng();
+
+    // Get the NEXT step after the left — that's where we ultimately need to be
+    const nextGStep = i + 1 < allGSteps.length ? allGSteps[i + 1] : null;
+    // The real destination is the start of the step AFTER the left turn
+    // (where we rejoin the original route)
+    const rejoinLat = nextGStep ? nextGStep.start_location.lat() : destLat;
+    const rejoinLng = nextGStep ? nextGStep.start_location.lng() : destLng;
 
     // Get approach direction from previous step
     const prevStep = i > 0 ? allGSteps[i - 1] : null;
@@ -1200,46 +1206,54 @@ async function calculateDetours(analysis, route) {
     const normLat = approachLat / dist;
     const normLng = approachLng / dist;
 
-    // RIGHT direction = 90° clockwise rotation of approach
+    // RIGHT direction = 90° clockwise rotation
     const rightLat = normLng;
     const rightLng = -normLat;
 
-    // Place a waypoint ~150m to the RIGHT of the intersection
-    // This forces Google to route RIGHT first, then find a way to the left's destination
-    const wpLat = turnLat + rightLat * 0.0015;
-    const wpLng = turnLng + rightLng * 0.0015;
+    // Start the detour from a point ~200m in the RIGHT direction from the intersection
+    // This forces Google to begin by going RIGHT (e.g., south on Burk instead of north)
+    const startLat = turnLat + rightLat * 0.002;
+    const startLng = turnLng + rightLng * 0.002;
 
     try {
       const detour = await new Promise((res, rej) => {
         dirSvc.route({
-          origin: new google.maps.LatLng(turnLat, turnLng),
-          destination: new google.maps.LatLng(destLat, destLng),
-          waypoints: [{ location: new google.maps.LatLng(wpLat, wpLng), stopover: false }],
+          origin: new google.maps.LatLng(startLat, startLng),
+          destination: new google.maps.LatLng(rejoinLat, rejoinLng),
           travelMode: 'DRIVING',
         }, (r, st) => st === 'OK' ? res(r) : rej(st));
       });
 
-      // Extract the detour steps
+      // Extract the detour steps with street names
       const detourSteps = [];
       detour.routes[0].legs.forEach(leg => {
         leg.steps.forEach(ds => {
           const inst = ds.instructions.replace(/<[^>]*>/g, '');
-          if (inst && !inst.toLowerCase().includes('head ')) {
-            detourSteps.push({
-              instruction: inst,
-              distance: ds.distance.text,
-              duration: ds.duration.text,
-            });
-          }
+          // Skip vague "head toward" first steps
+          if (inst.toLowerCase().startsWith('head ')) return;
+          detourSteps.push({
+            instruction: inst,
+            distance: ds.distance.text,
+            duration: ds.duration.text,
+          });
         });
       });
 
-      // Store detour steps on the analysis step
-      if (detourSteps.length > 0) {
+      // Add the initial "Turn right" as the first step
+      // Extract the street name from the original left turn instruction
+      const streetMatch = s.instruction.match(/onto\s+(.+)/i);
+      const streetName = streetMatch ? streetMatch[1] : 'this street';
+      detourSteps.unshift({
+        instruction: `Turn right onto ${streetName}`,
+        distance: '',
+        duration: '',
+      });
+
+      if (detourSteps.length > 1) {
         s.detourSteps = detourSteps;
       }
     } catch {
-      // Detour calculation failed — leave without detour info
+      // Detour failed silently
     }
   }
 }

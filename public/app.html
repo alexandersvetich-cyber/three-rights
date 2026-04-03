@@ -1183,12 +1183,10 @@ async function calculateDetours(analysis, route) {
     const gStep = allGSteps[i];
     const turnLat = gStep.start_location.lat();
     const turnLng = gStep.start_location.lng();
-
-    // Where the LEFT turn ends — we need to get here via right turns
     const leftEndLat = gStep.end_location.lat();
     const leftEndLng = gStep.end_location.lng();
 
-    // Also get the rejoin point (start of the step AFTER the left)
+    // Where we rejoin the original route
     const nextGStep = i + 1 < allGSteps.length ? allGSteps[i + 1] : null;
     const rejoinLat = nextGStep ? nextGStep.start_location.lat() : leftEndLat;
     const rejoinLng = nextGStep ? nextGStep.start_location.lng() : leftEndLng;
@@ -1204,54 +1202,60 @@ async function calculateDetours(analysis, route) {
 
     const normLat = dLat / dist;
     const normLng = dLng / dist;
-
-    // RIGHT = 90° clockwise: (dLat, dLng) → (dLng, -dLat)
     const rightLat = normLng;
     const rightLng = -normLat;
 
     try {
-      // CALL 1: Route from intersection to a point ~800m in the RIGHT direction
-      // This forces Google to go RIGHT at the intersection
-      const rightTarget = new google.maps.LatLng(
-        turnLat + rightLat * 0.008,
-        turnLng + rightLng * 0.008
-      );
+      // Use OSM to find the nearest intersection in the RIGHT direction
+      // Query for road junctions ~300-800m to the right
+      const searchLat = turnLat + rightLat * 0.005;
+      const searchLng = turnLng + rightLng * 0.005;
+      
+      const osmQuery = `[out:json][timeout:5];node["highway"](around:500,${searchLat},${searchLng});out 5;`;
+      let wpLat = turnLat + rightLat * 0.005;
+      let wpLng = turnLng + rightLng * 0.005;
+      
+      try {
+        const osmRes = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(osmQuery)}`);
+        if (osmRes.ok) {
+          const osmData = await osmRes.json();
+          if (osmData.elements && osmData.elements.length > 0) {
+            // Find the closest intersection node in the right direction
+            let bestDist = Infinity;
+            for (const node of osmData.elements) {
+              const d = haversine(searchLat, searchLng, node.lat, node.lon);
+              if (d < bestDist) {
+                bestDist = d;
+                wpLat = node.lat;
+                wpLng = node.lon;
+              }
+            }
+          }
+        }
+      } catch {}
 
-      const leg1 = await new Promise((res, rej) => {
+      // Route: intersection → right-direction intersection → rejoin point
+      const detour = await new Promise((res, rej) => {
         dirSvc.route({
           origin: new google.maps.LatLng(turnLat, turnLng),
-          destination: rightTarget,
-          travelMode: 'DRIVING',
-        }, (r, st) => st === 'OK' ? res(r) : rej(st));
-      });
-
-      // Get the actual endpoint Google routed to (snapped to a real road)
-      const leg1End = leg1.routes[0].legs[0].end_location;
-
-      // CALL 2: Route from where leg 1 ended back to the rejoin point
-      const leg2 = await new Promise((res, rej) => {
-        dirSvc.route({
-          origin: leg1End,
           destination: new google.maps.LatLng(rejoinLat, rejoinLng),
+          waypoints: [{
+            location: new google.maps.LatLng(wpLat, wpLng),
+            stopover: true
+          }],
           travelMode: 'DRIVING',
         }, (r, st) => st === 'OK' ? res(r) : rej(st));
       });
 
-      // Combine steps from both legs
+      // Collect steps from all legs
       const detourSteps = [];
-      const allDetourLegs = [...leg1.routes[0].legs, ...leg2.routes[0].legs];
-
-      allDetourLegs.forEach(leg => {
+      detour.routes[0].legs.forEach(leg => {
         leg.steps.forEach(ds => {
           let inst = ds.instructions.replace(/<[^>]*>/g, '');
-          // Skip vague first steps
           if (inst.toLowerCase().startsWith('head ')) return;
-          // Skip U-turns
           if (inst.toLowerCase().includes('u-turn')) return;
-          // Skip duplicates
           const lastInst = detourSteps.length > 0 ? detourSteps[detourSteps.length - 1].instruction : '';
           if (inst === lastInst) return;
-
           detourSteps.push({
             instruction: inst,
             distance: ds.distance.text,
@@ -1263,7 +1267,7 @@ async function calculateDetours(analysis, route) {
         s.detourSteps = detourSteps;
       }
     } catch {
-      // Fallback — just show "Turn right onto [street]"
+      // Fallback
       const streetMatch = s.instruction.match(/onto\s+(.+)/i);
       if (streetMatch) {
         s.detourSteps = [{

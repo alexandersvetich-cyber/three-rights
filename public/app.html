@@ -1272,12 +1272,28 @@ async function rerouteWithMirrorWaypoints(origin, destination, analysis, route, 
     const leftEndLat = gStep.end_location.lat();
     const leftEndLng = gStep.end_location.lng();
 
-    // Mirror: if left goes north, mirror goes south by the same amount
-    const mirrorLat = turnLat - (leftEndLat - turnLat);
-    const mirrorLng = turnLng - (leftEndLng - turnLng);
+    // Small nudge in the RIGHT direction — just enough to force Google right
+    // Don't mirror the full distance, just go ~250m (0.0025 degrees) 
+    const prevStep = i > 0 ? allGSteps[i - 1] : null;
+    if (!prevStep) continue;
+
+    const dLat = turnLat - prevStep.start_location.lat();
+    const dLng = turnLng - prevStep.start_location.lng();
+    const dist = Math.sqrt(dLat ** 2 + dLng ** 2);
+    if (dist === 0) continue;
+
+    const normLat = dLat / dist;
+    const normLng = dLng / dist;
+    // RIGHT = 90° clockwise
+    const rightLat = normLng;
+    const rightLng = -normLat;
+
+    // Nudge 250m in right direction — stays on the same street
+    const nudgeLat = turnLat + rightLat * 0.0025;
+    const nudgeLng = turnLng + rightLng * 0.0025;
 
     waypoints.push({
-      location: new google.maps.LatLng(mirrorLat, mirrorLng),
+      location: new google.maps.LatLng(nudgeLat, nudgeLng),
       stopover: true,
     });
   }

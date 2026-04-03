@@ -1186,68 +1186,31 @@ async function calculateDetours(analysis, route) {
     const leftEndLat = gStep.end_location.lat();
     const leftEndLng = gStep.end_location.lng();
 
-    // Where we rejoin the original route
+    // Rejoin point
     const nextGStep = i + 1 < allGSteps.length ? allGSteps[i + 1] : null;
     const rejoinLat = nextGStep ? nextGStep.start_location.lat() : leftEndLat;
     const rejoinLng = nextGStep ? nextGStep.start_location.lng() : leftEndLng;
 
-    // Get approach direction
-    const prevStep = i > 0 ? allGSteps[i - 1] : null;
-    if (!prevStep) continue;
-
-    const dLat = turnLat - prevStep.start_location.lat();
-    const dLng = turnLng - prevStep.start_location.lng();
-    const dist = Math.sqrt(dLat ** 2 + dLng ** 2);
-    if (dist === 0) continue;
-
-    const normLat = dLat / dist;
-    const normLng = dLng / dist;
-    const rightLat = normLng;
-    const rightLng = -normLat;
+    // MIRROR the left turn endpoint across the intersection
+    // If left goes NORTH 0.6mi to (33.36, -111.78), and intersection is at (33.355, -111.78)
+    // Then mirror = (33.35, -111.78) — same distance SOUTH on the same street
+    const mirrorLat = turnLat - (leftEndLat - turnLat);
+    const mirrorLng = turnLng - (leftEndLng - turnLng);
 
     try {
-      // Use OSM to find the nearest intersection in the RIGHT direction
-      // Query for road junctions ~300-800m to the right
-      const searchLat = turnLat + rightLat * 0.005;
-      const searchLng = turnLng + rightLng * 0.005;
-      
-      const osmQuery = `[out:json][timeout:5];node["highway"](around:500,${searchLat},${searchLng});out 5;`;
-      let wpLat = turnLat + rightLat * 0.005;
-      let wpLng = turnLng + rightLng * 0.005;
-      
-      try {
-        const osmRes = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(osmQuery)}`);
-        if (osmRes.ok) {
-          const osmData = await osmRes.json();
-          if (osmData.elements && osmData.elements.length > 0) {
-            // Find the closest intersection node in the right direction
-            let bestDist = Infinity;
-            for (const node of osmData.elements) {
-              const d = haversine(searchLat, searchLng, node.lat, node.lon);
-              if (d < bestDist) {
-                bestDist = d;
-                wpLat = node.lat;
-                wpLng = node.lon;
-              }
-            }
-          }
-        }
-      } catch {}
-
-      // Route: intersection → right-direction intersection → rejoin point
+      // Route: intersection → mirror point (forces RIGHT on same street) → rejoin
       const detour = await new Promise((res, rej) => {
         dirSvc.route({
           origin: new google.maps.LatLng(turnLat, turnLng),
           destination: new google.maps.LatLng(rejoinLat, rejoinLng),
           waypoints: [{
-            location: new google.maps.LatLng(wpLat, wpLng),
+            location: new google.maps.LatLng(mirrorLat, mirrorLng),
             stopover: true
           }],
           travelMode: 'DRIVING',
         }, (r, st) => st === 'OK' ? res(r) : rej(st));
       });
 
-      // Collect steps from all legs
       const detourSteps = [];
       detour.routes[0].legs.forEach(leg => {
         leg.steps.forEach(ds => {
@@ -1267,7 +1230,6 @@ async function calculateDetours(analysis, route) {
         s.detourSteps = detourSteps;
       }
     } catch {
-      // Fallback
       const streetMatch = s.instruction.match(/onto\s+(.+)/i);
       if (streetMatch) {
         s.detourSteps = [{

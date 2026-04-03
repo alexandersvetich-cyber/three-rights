@@ -1183,18 +1183,14 @@ async function calculateDetours(analysis, route) {
     const gStep = allGSteps[i];
     const turnLat = gStep.start_location.lat();
     const turnLng = gStep.start_location.lng();
-    // Where the left turn would END UP
-    const destLat = gStep.end_location.lat();
-    const destLng = gStep.end_location.lng();
 
-    // Get the NEXT step after the left — that's where we ultimately need to be
+    // Where we need to end up = start of the step AFTER the left turn
+    // That's where the original route continues
     const nextGStep = i + 1 < allGSteps.length ? allGSteps[i + 1] : null;
-    // The real destination is the start of the step AFTER the left turn
-    // (where we rejoin the original route)
-    const rejoinLat = nextGStep ? nextGStep.start_location.lat() : destLat;
-    const rejoinLng = nextGStep ? nextGStep.start_location.lng() : destLng;
+    const rejoinLat = nextGStep ? nextGStep.start_location.lat() : gStep.end_location.lat();
+    const rejoinLng = nextGStep ? nextGStep.start_location.lng() : gStep.end_location.lng();
 
-    // Get approach direction from previous step
+    // Get approach direction
     const prevStep = i > 0 ? allGSteps[i - 1] : null;
     if (!prevStep) continue;
 
@@ -1206,14 +1202,17 @@ async function calculateDetours(analysis, route) {
     const normLat = approachLat / dist;
     const normLng = approachLng / dist;
 
-    // RIGHT direction = 90° clockwise rotation
+    // RIGHT = 90° clockwise
     const rightLat = normLng;
     const rightLng = -normLat;
 
-    // Start the detour from a point ~200m in the RIGHT direction from the intersection
-    // This forces Google to begin by going RIGHT (e.g., south on Burk instead of north)
-    const startLat = turnLat + rightLat * 0.002;
-    const startLng = turnLng + rightLng * 0.002;
+    // Start ~400m down the right-turn street (far enough to pass the first intersection)
+    const startLat = turnLat + rightLat * 0.004;
+    const startLng = turnLng + rightLng * 0.004;
+
+    // Extract street name from the original left instruction
+    const streetMatch = s.instruction.match(/onto\s+(.+)/i);
+    const streetName = streetMatch ? streetMatch[1] : '';
 
     try {
       const detour = await new Promise((res, rej) => {
@@ -1224,36 +1223,44 @@ async function calculateDetours(analysis, route) {
         }, (r, st) => st === 'OK' ? res(r) : rej(st));
       });
 
-      // Extract the detour steps with street names
       const detourSteps = [];
+
+      // First step: turn right onto the street (we add this manually)
+      if (streetName) {
+        detourSteps.push({
+          instruction: `Turn right onto ${streetName}`,
+          distance: '',
+        });
+      }
+
+      // Add Google's calculated detour steps
       detour.routes[0].legs.forEach(leg => {
         leg.steps.forEach(ds => {
-          const inst = ds.instructions.replace(/<[^>]*>/g, '');
-          // Skip vague "head toward" first steps
+          let inst = ds.instructions.replace(/<[^>]*>/g, '');
+          // Skip "Head" steps and U-turns
           if (inst.toLowerCase().startsWith('head ')) return;
+          if (inst.toLowerCase().includes('u-turn')) return;
           detourSteps.push({
             instruction: inst,
             distance: ds.distance.text,
-            duration: ds.duration.text,
           });
         });
-      });
-
-      // Add the initial "Turn right" as the first step
-      // Extract the street name from the original left turn instruction
-      const streetMatch = s.instruction.match(/onto\s+(.+)/i);
-      const streetName = streetMatch ? streetMatch[1] : 'this street';
-      detourSteps.unshift({
-        instruction: `Turn right onto ${streetName}`,
-        distance: '',
-        duration: '',
       });
 
       if (detourSteps.length > 1) {
         s.detourSteps = detourSteps;
       }
     } catch {
-      // Detour failed silently
+      // If detour calc fails, just show the right-turn instruction
+      if (streetName) {
+        s.detourSteps = [{
+          instruction: `Turn right onto ${streetName}`,
+          distance: '',
+        }, {
+          instruction: 'Follow right turns to rejoin route',
+          distance: '',
+        }];
+      }
     }
   }
 }
@@ -1423,8 +1430,8 @@ function display(response, a) {
     d.innerHTML = `
       <div class="stp-i" style="background:${ib};color:${ic}">${icons[s.type]||'↑'}</div>
       <div style="flex:1;min-width:0">
-        <div class="stp-t" style="${isUL?'color:var(--amber);font-weight:600':isF?'color:var(--cyan);font-weight:600':''}">${isUL ? '↱ TURN RIGHT instead — ' + s.instruction.replace(/Turn left/i, 'skip left') : s.instruction}</div>
-        ${s.safety?`<div class="stp-n" style="color:${isUL?'var(--amber)':'var(--green)'}">${isUL?'↱':'🟢'} ${isUL ? 'Three rights make a left — turn right here' : s.safety.reason}</div>`:''}
+        <div class="stp-t" style="${isUL?'color:var(--amber);font-weight:600':isF?'color:var(--cyan);font-weight:600':''}">${isUL ? '↱ Turn right onto ' + (s.instruction.match(/onto\s+(.+)/i)?.[1] || 'next street') : s.instruction}</div>
+        ${s.safety?`<div class="stp-n" style="color:${isUL?'var(--amber)':'var(--green)'}">${isUL?'↱':'🟢'} ${isUL ? 'Three rights make a left' : s.safety.reason}</div>`:''}
         ${isUL && s.detourSteps ? `<div style="margin-top:6px;padding:8px 10px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.15);border-radius:6px"><div style="font-family:var(--font-m);font-size:9px;color:var(--amber);letter-spacing:0.05em;margin-bottom:4px">THREE-RIGHTS DETOUR:</div>${s.detourSteps.map((ds, di) => `<div style="font-family:var(--font-m);font-size:11px;color:var(--text);padding:2px 0">↱ ${di + 1}. ${ds.instruction} <span style="color:var(--text2);font-size:9px">${ds.distance}</span></div>`).join('')}</div>` : ''}
         ${isF&&s.type==='merge'?'<div class="stp-n" style="color:var(--cyan)">Right-side merge — no left turns on freeways</div>':''}
         <div class="stp-d">${s.distance} · ${s.duration}</div>

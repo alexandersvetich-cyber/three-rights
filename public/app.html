@@ -1260,8 +1260,9 @@ async function rerouteWithMirrorWaypoints(origin, destination, analysis, route, 
   const allGSteps = [];
   route.legs.forEach(leg => leg.steps.forEach(s => allGSteps.push(s)));
 
-  // For each unprotected left, create a mirror waypoint on the RIGHT side
+  const leftTurns = [];
   const waypoints = [];
+
   for (let i = 0; i < allGSteps.length; i++) {
     const s = analysis.steps[i];
     if (!s || s.type !== 'unprotected_left') continue;
@@ -1269,10 +1270,7 @@ async function rerouteWithMirrorWaypoints(origin, destination, analysis, route, 
     const gStep = allGSteps[i];
     const turnLat = gStep.start_location.lat();
     const turnLng = gStep.start_location.lng();
-    const leftEndLat = gStep.end_location.lat();
-    const leftEndLng = gStep.end_location.lng();
 
-    // Nudge ~500m in right direction to reach the next major cross street
     const prevStep = i > 0 ? allGSteps[i - 1] : null;
     if (!prevStep) continue;
 
@@ -1286,32 +1284,30 @@ async function rerouteWithMirrorWaypoints(origin, destination, analysis, route, 
     const rightLat = normLng;
     const rightLng = -normLat;
 
-    // 500m in right direction — should reach the next major cross street
-    const nudgeLat = turnLat + rightLat * 0.005;
-    const nudgeLng = turnLng + rightLng * 0.005;
+    leftTurns.push({ turnLat, turnLng });
 
+    // 400m right — stopover forces Google through this point
     waypoints.push({
-      location: new google.maps.LatLng(nudgeLat, nudgeLng),
-      stopover: false, // via point, not a stop — Google won't loop back
+      location: new google.maps.LatLng(
+        turnLat + rightLat * 0.004,
+        turnLng + rightLng * 0.004
+      ),
+      stopover: true,
     });
   }
 
   if (waypoints.length === 0) return null;
 
-  // Limit to 8 waypoints (Google max)
-  const limitedWaypoints = waypoints.slice(0, 8);
-
   try {
-    // Re-request the FULL route with mirror waypoints
     const rerouted = await new Promise((res, rej) => {
       dirSvc.route({
         origin, destination,
-        waypoints: limitedWaypoints,
+        waypoints: waypoints.slice(0, 8),
+        optimizeWaypoints: false,
         travelMode: 'DRIVING',
       }, (r, s) => s === 'OK' ? res(r) : rej(s));
     });
 
-    // Re-analyze — need fresh bounds for the new route
     const bounds2 = { north: -90, south: 90, east: -180, west: 180 };
     rerouted.routes.forEach(r => r.legs.forEach(leg => {
       leg.steps.forEach(step => {
@@ -1333,15 +1329,32 @@ async function rerouteWithMirrorWaypoints(origin, destination, analysis, route, 
       await verifyLeftTurns(a, rerouted.routes[a.routeIndex], arrows2, osm2);
     }
 
-    // Pick the route with fewest unprotected lefts
     reAnalyzed.sort((a, b) => a.unprotectedLefts !== b.unprotectedLefts
       ? a.unprotectedLefts - b.unprotectedLefts
       : a.dur - b.dur);
 
     const best = reAnalyzed[0];
 
-    // Only use if strictly fewer unprotected lefts
-    if (best.unprotectedLefts < analysis.unprotectedLefts) {
+    // Check if the ORIGINAL problem lefts were eliminated
+    let originalProblemsFixed = 0;
+    for (const lt of leftTurns) {
+      let stillThere = false;
+      let sIdx = 0;
+      rerouted.routes[best.routeIndex].legs.forEach(leg => {
+        leg.steps.forEach(step => {
+          if (best.steps[sIdx]?.type === 'unprotected_left') {
+            if (haversine(step.start_location.lat(), step.start_location.lng(), lt.turnLat, lt.turnLng) < 100) {
+              stillThere = true;
+            }
+          }
+          sIdx++;
+        });
+      });
+      if (!stillThere) originalProblemsFixed++;
+    }
+
+    // Accept if we fixed at least one original problem left
+    if (originalProblemsFixed > 0) {
       return { result: rerouted, analysis: best };
     }
 

@@ -763,10 +763,6 @@ async function navigate() {
     // Use Google's route
     const best = analyzed[0];
 
-    // Calculate three-rights detour routes for each unprotected left
-    btn.innerHTML = '<span class="ld">CALCULATING THREE-RIGHTS DETOURS...</span>';
-    await calculateDetours(best, result.routes[best.routeIndex]);
-
     display(result, best);
   } catch (e) {
     showErr(`Route failed: ${e}. Check addresses.`);
@@ -975,7 +971,7 @@ async function verifyLeftTurns(analysis, route, communityArrows, osmSignals) {
     if (hasStopSign) {
       // Stop sign confirmed — this is always unprotected, no override allowed
       ls.step.type = 'unprotected_left';
-      ls.step.safety = { safe: false, reason: 'Stop sign — turn right, three rights make a left', type: 'unprotected' };
+      ls.step.safety = { safe: false, reason: 'Stop sign — turn right', type: 'unprotected' };
       continue; // Skip all other checks — stop signs can't have green arrows
     }
 
@@ -1137,7 +1133,7 @@ function analyze(route, idx) {
         } else if (currentlyOnMajor) {
           reason = 'No confirmed green arrow — go past and make three rights';
         } else {
-          reason = 'Stop sign — turn right, three rights make a left';
+          reason = 'Stop sign — turn right';
         }
         safety = { safe: false, reason, type: 'unprotected' };
       }
@@ -1403,35 +1399,19 @@ function display(response, a) {
     const isPL = s.type==='fourway_left' || s.type==='confirmed_left', isUL = s.type==='unprotected_left';
     const isF = s.type==='freeway'||s.type==='merge'||s.type==='exit';
 
-    // Get lat/lng for this step from turnMarkers
     const tm = turnMarkers.find(t => t.stepIdx === idx);
     const stepLat = tm ? tm.lat : 0;
     const stepLng = tm ? tm.lng : 0;
 
-    // For unprotected lefts WITH detour steps: replace with detour directions
-    if (isUL && s.detourSteps && s.detourSteps.length > 0) {
-      s.detourSteps.forEach((ds, di) => {
-        const d = document.createElement('div');
-        d.className = 'stp'; d.style.background = 'var(--amber-dim)'; d.style.cursor = 'pointer';
-        d.innerHTML = `
-          <div class="stp-i" style="background:var(--amber);color:var(--white)">↱</div>
-          <div style="flex:1;min-width:0">
-            <div class="stp-t" style="color:var(--amber);font-weight:600">${ds.instruction}</div>
-            ${ds.distance ? `<div class="stp-d">${ds.distance}</div>` : ''}
-            ${di === 0 && !isStopSign(s) && stepLat ? `<button class="flag-arrow-btn" data-lat="${stepLat}" data-lng="${stepLng}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--cyan);cursor:pointer;white-space:nowrap">🟢 I know this has a green arrow</button>` : ''}
-          </div>`;
-        sl.appendChild(d);
-      });
-      return; // skip the original left turn step
-    }
+    const d = document.createElement('div');
 
-    // For unprotected lefts WITHOUT detour steps: show as "Turn right onto [street]"
     if (isUL) {
+      // Clean "Turn right onto [street]" — no clutter
       const streetName = s.instruction.match(/onto\s+(.+)/i)?.[1] || 'next street';
-      const d = document.createElement('div');
-      d.className = 'stp'; d.style.background = 'var(--amber-dim)'; d.style.cursor = 'pointer';
       const isStop = s.safety?.reason?.toLowerCase().includes('stop sign');
       const flagBtn = (!isStop && stepLat) ? `<button class="flag-arrow-btn" data-lat="${stepLat}" data-lng="${stepLng}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--cyan);cursor:pointer;white-space:nowrap">🟢 I know this has a green arrow</button>` : '';
+
+      d.className = 'stp'; d.style.background = 'var(--amber-dim)'; d.style.cursor = 'pointer';
       d.innerHTML = `
         <div class="stp-i" style="background:var(--amber);color:var(--white)">↱</div>
         <div style="flex:1;min-width:0">
@@ -1439,39 +1419,30 @@ function display(response, a) {
           <div class="stp-d">${s.distance} · ${s.duration}</div>
           ${flagBtn}
         </div>`;
-      d.addEventListener('click', (e) => {
-        if (e.target.closest('.flag-arrow-btn')) return;
-        if (tm) { map.panTo({ lat: tm.lat, lng: tm.lng }); map.setZoom(17); tm.marker.setAnimation(google.maps.Animation.BOUNCE); setTimeout(() => tm.marker.setAnimation(null), 1500); }
-      });
-      sl.appendChild(d);
-      return;
+    } else {
+      // All other steps — normal rendering
+      const bg = isPL?'var(--green-dim)':isF?'var(--cyan-dim)':'transparent';
+      const ib = isPL?'var(--green)':isF?'var(--cyan)':'var(--surface2)';
+      const ic = (isPL||isF)?'var(--white)':'var(--text2)';
+
+      const hasUnverifiedReport = s.safety?.reason?.includes('reported green arrow');
+      const unflagBtnHtml = (s.type === 'confirmed_left' && (s.safety?.type === 'community_verified') && stepLat)
+        ? `<button class="unflag-arrow-btn" data-lat="${stepLat}" data-lng="${stepLng}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--red);cursor:pointer;white-space:nowrap">✕ Remove my confirmation</button>`
+        : (hasUnverifiedReport && stepLat)
+          ? `<button class="unflag-arrow-btn" data-lat="${stepLat}" data-lng="${stepLng}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--red);cursor:pointer;white-space:nowrap">✕ Remove my flag</button>`
+          : '';
+
+      d.className = 'stp'; d.style.background = bg; d.style.cursor = 'pointer';
+      d.innerHTML = `
+        <div class="stp-i" style="background:${ib};color:${ic}">${icons[s.type]||'↑'}</div>
+        <div style="flex:1;min-width:0">
+          <div class="stp-t" style="${isF?'color:var(--cyan);font-weight:600':''}">${s.instruction}</div>
+          ${s.safety?`<div class="stp-n" style="color:var(--green)">🟢 ${s.safety.reason}</div>`:''}
+          ${isF&&s.type==='merge'?'<div class="stp-n" style="color:var(--cyan)">Right-side merge — no left turns on freeways</div>':''}
+          <div class="stp-d">${s.distance} · ${s.duration}</div>
+          ${unflagBtnHtml}
+        </div>`;
     }
-
-    // All other step types — normal rendering
-    const bg = isPL?'var(--green-dim)':isF?'var(--cyan-dim)':'transparent';
-    const ib = isPL?'var(--green)':isF?'var(--cyan)':'var(--surface2)';
-    const ic = (isPL||isF)?'var(--white)':'var(--text2)';
-
-    const d = document.createElement('div');
-    d.className = 'stp'; d.style.background = bg; d.style.cursor = 'pointer';
-
-    // Unflag button for confirmed lefts
-    const hasUnverifiedReport = s.safety?.reason?.includes('reported green arrow');
-    const unflagBtnHtml = (s.type === 'confirmed_left' && (s.safety?.type === 'community_verified') && stepLat)
-      ? `<button class="unflag-arrow-btn" data-lat="${stepLat}" data-lng="${stepLng}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--red);cursor:pointer;white-space:nowrap">✕ Remove my confirmation</button>`
-      : (hasUnverifiedReport && stepLat)
-        ? `<button class="unflag-arrow-btn" data-lat="${stepLat}" data-lng="${stepLng}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--red);cursor:pointer;white-space:nowrap">✕ Remove my flag</button>`
-        : '';
-
-    d.innerHTML = `
-      <div class="stp-i" style="background:${ib};color:${ic}">${icons[s.type]||'↑'}</div>
-      <div style="flex:1;min-width:0">
-        <div class="stp-t" style="${isF?'color:var(--cyan);font-weight:600':''}">${s.instruction}</div>
-        ${s.safety?`<div class="stp-n" style="color:var(--green)">🟢 ${s.safety.reason}</div>`:''}
-        ${isF&&s.type==='merge'?'<div class="stp-n" style="color:var(--cyan)">Right-side merge — no left turns on freeways</div>':''}
-        <div class="stp-d">${s.distance} · ${s.duration}</div>
-        ${unflagBtnHtml}
-      </div>`;
 
     d.addEventListener('click', (e) => {
       if (e.target.closest('.flag-arrow-btn') || e.target.closest('.unflag-arrow-btn')) return;
@@ -1480,10 +1451,6 @@ function display(response, a) {
 
     sl.appendChild(d);
   });
-
-  function isStopSign(step) {
-    return step.safety?.reason?.toLowerCase().includes('stop sign');
-  }
 
   // ── Flag button handlers (community database) ──
   sl.querySelectorAll('.flag-arrow-btn').forEach(btn => {
@@ -1983,7 +1950,7 @@ function updateNavUI() {
   const streetText = displayStep.instruction.replace(/<[^>]*>/g, '');
   if (displayStep.turnType === 'unprotected_left') {
     if (navMode === 'safe') {
-      document.getElementById('hud-street').textContent = '⚠ TURN RIGHT instead — three rights make a left';
+      document.getElementById('hud-street').textContent = '⚠ Turn right here';
     } else {
       document.getElementById('hud-street').textContent = '⚠ CAUTION — unprotected left · ' + streetText;
     }

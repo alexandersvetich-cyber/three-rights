@@ -1260,54 +1260,54 @@ async function rerouteWithMirrorWaypoints(origin, destination, analysis, route, 
   const allGSteps = [];
   route.legs.forEach(leg => leg.steps.forEach(s => allGSteps.push(s)));
 
-  const leftTurns = [];
-  const waypoints = [];
-
+  // Find the FIRST unprotected left
+  let firstLeftIdx = -1;
   for (let i = 0; i < allGSteps.length; i++) {
-    const s = analysis.steps[i];
-    if (!s || s.type !== 'unprotected_left') continue;
-
-    const gStep = allGSteps[i];
-    const turnLat = gStep.start_location.lat();
-    const turnLng = gStep.start_location.lng();
-
-    const prevStep = i > 0 ? allGSteps[i - 1] : null;
-    if (!prevStep) continue;
-
-    const dLat = turnLat - prevStep.start_location.lat();
-    const dLng = turnLng - prevStep.start_location.lng();
-    const dist = Math.sqrt(dLat ** 2 + dLng ** 2);
-    if (dist === 0) continue;
-
-    const normLat = dLat / dist;
-    const normLng = dLng / dist;
-    const rightLat = normLng;
-    const rightLng = -normLat;
-
-    leftTurns.push({ turnLat, turnLng });
-
-    // 400m right — stopover forces Google through this point
-    waypoints.push({
-      location: new google.maps.LatLng(
-        turnLat + rightLat * 0.004,
-        turnLng + rightLng * 0.004
-      ),
-      stopover: true,
-    });
+    if (analysis.steps[i]?.type === 'unprotected_left') {
+      firstLeftIdx = i;
+      break;
+    }
   }
+  if (firstLeftIdx < 0) return null;
 
-  if (waypoints.length === 0) return null;
+  const gStep = allGSteps[firstLeftIdx];
+  const turnLat = gStep.start_location.lat();
+  const turnLng = gStep.start_location.lng();
+
+  // Get approach direction
+  const prevStep = firstLeftIdx > 0 ? allGSteps[firstLeftIdx - 1] : null;
+  if (!prevStep) return null;
+
+  const dLat = turnLat - prevStep.start_location.lat();
+  const dLng = turnLng - prevStep.start_location.lng();
+  const dist = Math.sqrt(dLat ** 2 + dLng ** 2);
+  if (dist === 0) return null;
+
+  const normLat = dLat / dist;
+  const normLng = dLng / dist;
+  const rightLat = normLng;
+  const rightLng = -normLat;
+
+  // New origin: 300m in the RIGHT direction from the intersection
+  // This puts us past the left turn, already heading right
+  const newOriginLat = turnLat + rightLat * 0.003;
+  const newOriginLng = turnLng + rightLng * 0.003;
+
+  // Store the pre-route instruction (how to get from real origin to new origin)
+  const streetMatch = analysis.steps[firstLeftIdx].instruction.match(/onto\s+(.+)/i);
+  const turnStreet = streetMatch ? streetMatch[1] : 'next street';
 
   try {
+    // Route from the shifted origin to the destination
     const rerouted = await new Promise((res, rej) => {
       dirSvc.route({
-        origin, destination,
-        waypoints: waypoints.slice(0, 8),
-        optimizeWaypoints: false,
+        origin: new google.maps.LatLng(newOriginLat, newOriginLng),
+        destination,
         travelMode: 'DRIVING',
       }, (r, s) => s === 'OK' ? res(r) : rej(s));
     });
 
+    // Re-analyze
     const bounds2 = { north: -90, south: 90, east: -180, west: 180 };
     rerouted.routes.forEach(r => r.legs.forEach(leg => {
       leg.steps.forEach(step => {
@@ -1335,30 +1335,24 @@ async function rerouteWithMirrorWaypoints(origin, destination, analysis, route, 
 
     const best = reAnalyzed[0];
 
-    // Check if the ORIGINAL problem lefts were eliminated
-    let originalProblemsFixed = 0;
-    for (const lt of leftTurns) {
-      let stillThere = false;
-      let sIdx = 0;
-      rerouted.routes[best.routeIndex].legs.forEach(leg => {
-        leg.steps.forEach(step => {
-          if (best.steps[sIdx]?.type === 'unprotected_left') {
-            if (haversine(step.start_location.lat(), step.start_location.lng(), lt.turnLat, lt.turnLng) < 100) {
-              stillThere = true;
-            }
-          }
-          sIdx++;
-        });
-      });
-      if (!stillThere) originalProblemsFixed++;
-    }
+    // Prepend the initial steps: "Head east on Vaughn" + "Turn right onto Burk"
+    const prevInstruction = prevStep.instructions ? prevStep.instructions.replace(/<[^>]*>/g, '') : 'Head to intersection';
+    // Clean up "toward" text
+    const cleanPrevInst = prevInstruction.replace(/\s+toward\s+.+$/i, '');
 
-    // Accept if we fixed at least one original problem left
-    if (originalProblemsFixed > 0) {
-      return { result: rerouted, analysis: best };
-    }
+    best.steps.unshift({
+      instruction: `Turn right onto ${turnStreet}`,
+      distance: '0.1 mi', duration: '1 min',
+      type: 'right', maneuver: 'turn-right', safety: null, isFreeway: false,
+    });
+    best.steps.unshift({
+      instruction: cleanPrevInst,
+      distance: prevStep.distance ? prevStep.distance.text : '0.2 mi',
+      duration: prevStep.duration ? prevStep.duration.text : '1 min',
+      type: 'straight', maneuver: '', safety: null, isFreeway: false,
+    });
 
-    return null;
+    return { result: rerouted, analysis: best };
   } catch {
     return null;
   }

@@ -1184,11 +1184,9 @@ async function calculateDetours(analysis, route) {
     const turnLat = gStep.start_location.lat();
     const turnLng = gStep.start_location.lng();
 
-    // Where we need to end up = start of the step AFTER the left turn
-    // That's where the original route continues
-    const nextGStep = i + 1 < allGSteps.length ? allGSteps[i + 1] : null;
-    const rejoinLat = nextGStep ? nextGStep.start_location.lat() : gStep.end_location.lat();
-    const rejoinLng = nextGStep ? nextGStep.start_location.lng() : gStep.end_location.lng();
+    // The LEFT turn ends here — this is where we need to end up via right turns
+    const leftEndLat = gStep.end_location.lat();
+    const leftEndLng = gStep.end_location.lng();
 
     // Get approach direction
     const prevStep = i > 0 ? allGSteps[i - 1] : null;
@@ -1206,40 +1204,40 @@ async function calculateDetours(analysis, route) {
     const rightLat = normLng;
     const rightLng = -normLat;
 
-    // Start ~400m down the right-turn street (far enough to pass the first intersection)
-    const startLat = turnLat + rightLat * 0.004;
-    const startLng = turnLng + rightLng * 0.004;
+    // Place a waypoint ~500m in the RIGHT direction
+    // This forces Google through the right-turn street and past the first cross street
+    const wpLat = turnLat + rightLat * 0.005;
+    const wpLng = turnLng + rightLng * 0.005;
 
-    // Extract street name from the original left instruction
+    // Extract street name
     const streetMatch = s.instruction.match(/onto\s+(.+)/i);
     const streetName = streetMatch ? streetMatch[1] : '';
 
     try {
+      // Route: intersection → waypoint (forces right turn) → left turn endpoint
       const detour = await new Promise((res, rej) => {
         dirSvc.route({
-          origin: new google.maps.LatLng(startLat, startLng),
-          destination: new google.maps.LatLng(rejoinLat, rejoinLng),
+          origin: new google.maps.LatLng(turnLat, turnLng),
+          destination: new google.maps.LatLng(leftEndLat, leftEndLng),
+          waypoints: [{
+            location: new google.maps.LatLng(wpLat, wpLng),
+            stopover: true
+          }],
           travelMode: 'DRIVING',
         }, (r, st) => st === 'OK' ? res(r) : rej(st));
       });
 
       const detourSteps = [];
 
-      // First step: turn right onto the street (we add this manually)
-      if (streetName) {
-        detourSteps.push({
-          instruction: `Turn right onto ${streetName}`,
-          distance: '',
-        });
-      }
-
-      // Add Google's calculated detour steps
+      // Collect ALL steps from ALL legs (waypoints create multiple legs)
       detour.routes[0].legs.forEach(leg => {
         leg.steps.forEach(ds => {
           let inst = ds.instructions.replace(/<[^>]*>/g, '');
           // Skip "Head" steps and U-turns
           if (inst.toLowerCase().startsWith('head ')) return;
           if (inst.toLowerCase().includes('u-turn')) return;
+          // Skip duplicates
+          if (detourSteps.length > 0 && detourSteps[detourSteps.length - 1].instruction === inst) return;
           detourSteps.push({
             instruction: inst,
             distance: ds.distance.text,
@@ -1247,11 +1245,11 @@ async function calculateDetours(analysis, route) {
         });
       });
 
-      if (detourSteps.length > 1) {
+      if (detourSteps.length > 0) {
         s.detourSteps = detourSteps;
       }
     } catch {
-      // If detour calc fails, just show the right-turn instruction
+      // Fallback
       if (streetName) {
         s.detourSteps = [{
           instruction: `Turn right onto ${streetName}`,
@@ -1404,22 +1402,60 @@ function display(response, a) {
   a.steps.forEach((s, idx) => {
     const isPL = s.type==='fourway_left' || s.type==='confirmed_left', isUL = s.type==='unprotected_left';
     const isF = s.type==='freeway'||s.type==='merge'||s.type==='exit';
-    const bg = isUL?'var(--amber-dim)':isPL?'var(--green-dim)':isF?'var(--cyan-dim)':'transparent';
-    const ib = isUL?'var(--amber)':isPL?'var(--green)':isF?'var(--cyan)':'var(--surface2)';
-    const ic = (isUL||isPL||isF)?'var(--white)':'var(--text2)';
 
     // Get lat/lng for this step from turnMarkers
     const tm = turnMarkers.find(t => t.stepIdx === idx);
     const stepLat = tm ? tm.lat : 0;
     const stepLng = tm ? tm.lng : 0;
 
+    // For unprotected lefts WITH detour steps: replace with detour directions
+    if (isUL && s.detourSteps && s.detourSteps.length > 0) {
+      s.detourSteps.forEach((ds, di) => {
+        const d = document.createElement('div');
+        d.className = 'stp'; d.style.background = 'var(--amber-dim)'; d.style.cursor = 'pointer';
+        d.innerHTML = `
+          <div class="stp-i" style="background:var(--amber);color:var(--white)">↱</div>
+          <div style="flex:1;min-width:0">
+            <div class="stp-t" style="color:var(--amber);font-weight:600">${ds.instruction}</div>
+            ${ds.distance ? `<div class="stp-d">${ds.distance}</div>` : ''}
+            ${di === 0 && !isStopSign(s) && stepLat ? `<button class="flag-arrow-btn" data-lat="${stepLat}" data-lng="${stepLng}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--cyan);cursor:pointer;white-space:nowrap">🟢 I know this has a green arrow</button>` : ''}
+          </div>`;
+        sl.appendChild(d);
+      });
+      return; // skip the original left turn step
+    }
+
+    // For unprotected lefts WITHOUT detour steps: show as "Turn right onto [street]"
+    if (isUL) {
+      const streetName = s.instruction.match(/onto\s+(.+)/i)?.[1] || 'next street';
+      const d = document.createElement('div');
+      d.className = 'stp'; d.style.background = 'var(--amber-dim)'; d.style.cursor = 'pointer';
+      const isStop = s.safety?.reason?.toLowerCase().includes('stop sign');
+      const flagBtn = (!isStop && stepLat) ? `<button class="flag-arrow-btn" data-lat="${stepLat}" data-lng="${stepLng}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--cyan);cursor:pointer;white-space:nowrap">🟢 I know this has a green arrow</button>` : '';
+      d.innerHTML = `
+        <div class="stp-i" style="background:var(--amber);color:var(--white)">↱</div>
+        <div style="flex:1;min-width:0">
+          <div class="stp-t" style="color:var(--amber);font-weight:600">Turn right onto ${streetName}</div>
+          <div class="stp-d">${s.distance} · ${s.duration}</div>
+          ${flagBtn}
+        </div>`;
+      d.addEventListener('click', (e) => {
+        if (e.target.closest('.flag-arrow-btn')) return;
+        if (tm) { map.panTo({ lat: tm.lat, lng: tm.lng }); map.setZoom(17); tm.marker.setAnimation(google.maps.Animation.BOUNCE); setTimeout(() => tm.marker.setAnimation(null), 1500); }
+      });
+      sl.appendChild(d);
+      return;
+    }
+
+    // All other step types — normal rendering
+    const bg = isPL?'var(--green-dim)':isF?'var(--cyan-dim)':'transparent';
+    const ib = isPL?'var(--green)':isF?'var(--cyan)':'var(--surface2)';
+    const ic = (isPL||isF)?'var(--white)':'var(--text2)';
+
     const d = document.createElement('div');
     d.className = 'stp'; d.style.background = bg; d.style.cursor = 'pointer';
 
-    // Build flag button HTML for unprotected lefts — but NOT for confirmed stop signs
-    const isStopSign = s.safety?.reason?.toLowerCase().includes('stop sign');
-    const flagBtnHtml = (isUL && !isStopSign && stepLat) ? `<button class="flag-arrow-btn" data-lat="${stepLat}" data-lng="${stepLng}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--cyan);cursor:pointer;white-space:nowrap">🟢 I know this has a green arrow</button>` : '';
-    // Build unflag button
+    // Unflag button for confirmed lefts
     const hasUnverifiedReport = s.safety?.reason?.includes('reported green arrow');
     const unflagBtnHtml = (s.type === 'confirmed_left' && (s.safety?.type === 'community_verified') && stepLat)
       ? `<button class="unflag-arrow-btn" data-lat="${stepLat}" data-lng="${stepLng}" style="margin-top:6px;padding:5px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-family:var(--font-m);font-size:10px;color:var(--red);cursor:pointer;white-space:nowrap">✕ Remove my confirmation</button>`
@@ -1430,28 +1466,24 @@ function display(response, a) {
     d.innerHTML = `
       <div class="stp-i" style="background:${ib};color:${ic}">${icons[s.type]||'↑'}</div>
       <div style="flex:1;min-width:0">
-        <div class="stp-t" style="${isUL?'color:var(--amber);font-weight:600':isF?'color:var(--cyan);font-weight:600':''}">${isUL ? '↱ Turn right onto ' + (s.instruction.match(/onto\s+(.+)/i)?.[1] || 'next street') : s.instruction}</div>
-        ${s.safety?`<div class="stp-n" style="color:${isUL?'var(--amber)':'var(--green)'}">${isUL?'↱':'🟢'} ${isUL ? 'Three rights make a left' : s.safety.reason}</div>`:''}
-        ${isUL && s.detourSteps ? `<div style="margin-top:6px;padding:8px 10px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.15);border-radius:6px"><div style="font-family:var(--font-m);font-size:9px;color:var(--amber);letter-spacing:0.05em;margin-bottom:4px">THREE-RIGHTS DETOUR:</div>${s.detourSteps.map((ds, di) => `<div style="font-family:var(--font-m);font-size:11px;color:var(--text);padding:2px 0">↱ ${di + 1}. ${ds.instruction} <span style="color:var(--text2);font-size:9px">${ds.distance}</span></div>`).join('')}</div>` : ''}
+        <div class="stp-t" style="${isF?'color:var(--cyan);font-weight:600':''}">${s.instruction}</div>
+        ${s.safety?`<div class="stp-n" style="color:var(--green)">🟢 ${s.safety.reason}</div>`:''}
         ${isF&&s.type==='merge'?'<div class="stp-n" style="color:var(--cyan)">Right-side merge — no left turns on freeways</div>':''}
         <div class="stp-d">${s.distance} · ${s.duration}</div>
-        ${flagBtnHtml}${unflagBtnHtml}
+        ${unflagBtnHtml}
       </div>`;
 
-    // Click step → pan map to that turn (but not when clicking buttons)
     d.addEventListener('click', (e) => {
       if (e.target.closest('.flag-arrow-btn') || e.target.closest('.unflag-arrow-btn')) return;
-      const tm = turnMarkers.find(t => t.stepIdx === idx);
-      if (tm) {
-        map.panTo({ lat: tm.lat, lng: tm.lng });
-        map.setZoom(17);
-        tm.marker.setAnimation(google.maps.Animation.BOUNCE);
-        setTimeout(() => tm.marker.setAnimation(null), 1500);
-      }
+      if (tm) { map.panTo({ lat: tm.lat, lng: tm.lng }); map.setZoom(17); tm.marker.setAnimation(google.maps.Animation.BOUNCE); setTimeout(() => tm.marker.setAnimation(null), 1500); }
     });
 
     sl.appendChild(d);
   });
+
+  function isStopSign(step) {
+    return step.safety?.reason?.toLowerCase().includes('stop sign');
+  }
 
   // ── Flag button handlers (community database) ──
   sl.querySelectorAll('.flag-arrow-btn').forEach(btn => {

@@ -1169,11 +1169,18 @@ function analyze(route, idx) {
     });
   });
 
+  // Sum distance and duration across all legs (waypoints create multiple legs)
+  let totalDist = 0;
+  let totalDurText = '';
+  route.legs.forEach(leg => { totalDist += leg.distance.value; });
+  const totalMiles = (totalDist * 0.000621371).toFixed(1);
+  const totalMin = Math.round(dur / 60);
+
   return {
     routeIndex: idx, steps, unprotectedLefts: uLeft, protectedLefts: 0, fourWayLefts: fourWay,
     dur, usesFreeway: hasFwy, fwyNames: [...fwys],
-    distText: route.legs[0].distance.text,
-    durText: route.legs[0].duration_in_traffic?.text || route.legs[0].duration.text,
+    distText: `${totalMiles} mi`,
+    durText: `${totalMin} mins`,
   };
 }
 
@@ -1319,8 +1326,9 @@ async function rerouteWithMirrorWaypoints(origin, destination, analysis, route, 
 
     const best = reAnalyzed[0];
 
-    // Only use if it's better than the original
-    if (best.unprotectedLefts < analysis.unprotectedLefts) {
+    // Use rerouted route if it has fewer or equal unprotected lefts
+    // (equal is fine — the reroute avoids the ORIGINAL problem lefts even if new ones appear)
+    if (best.unprotectedLefts <= analysis.unprotectedLefts) {
       return { result: rerouted, analysis: best };
     }
 

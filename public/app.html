@@ -768,6 +768,7 @@ async function navigate() {
       btn.innerHTML = '<span class="ld">ELIMINATING LEFT TURNS...</span>';
 
       const rerouted = await rerouteWithMirrorWaypoints(origin, destination, best, result.routes[best.routeIndex], communityArrows, osmSignals);
+      console.log('Reroute result:', rerouted ? 'SUCCESS - ' + rerouted.analysis.steps.length + ' steps, ' + rerouted.analysis.unprotectedLefts + ' unprotected lefts' : 'FAILED - null');
       if (rerouted) {
         bestResult = rerouted.result;
         best = rerouted.analysis;
@@ -1289,22 +1290,23 @@ async function rerouteWithMirrorWaypoints(origin, destination, analysis, route, 
   const rightLng = -normLat;
 
   // New origin: 300m in the RIGHT direction from the intersection
-  // This puts us past the left turn, already heading right
   const newOriginLat = turnLat + rightLat * 0.003;
   const newOriginLng = turnLng + rightLng * 0.003;
+  console.log('Reroute: shifting origin to', newOriginLat, newOriginLng, '(300m right of intersection)');
 
-  // Store the pre-route instruction (how to get from real origin to new origin)
   const streetMatch = analysis.steps[firstLeftIdx].instruction.match(/onto\s+(.+)/i);
   const turnStreet = streetMatch ? streetMatch[1] : 'next street';
 
   try {
-    // Route from the shifted origin to the destination
     const rerouted = await new Promise((res, rej) => {
       dirSvc.route({
         origin: new google.maps.LatLng(newOriginLat, newOriginLng),
         destination,
         travelMode: 'DRIVING',
-      }, (r, s) => s === 'OK' ? res(r) : rej(s));
+      }, (r, s) => {
+        console.log('Reroute Google response:', s, r ? r.routes.length + ' routes' : 'no routes');
+        s === 'OK' ? res(r) : rej(s);
+      });
     });
 
     // Re-analyze
